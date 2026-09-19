@@ -2,7 +2,9 @@
 #SBATCH --job-name=cverify-tqa
 #SBATCH --output=logs/cverify-tqa-%A_%a.out
 #SBATCH --error=logs/cverify-tqa-%A_%a.err
-#SBATCH --array=0-8%1
+# The cluster permits only two submitted jobs at once. This default runs the
+# first wave; override it with --array=2-3, 4-5, 6-7, and 8 for later waves.
+#SBATCH --array=0-1%2
 #SBATCH --time=05:50:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8

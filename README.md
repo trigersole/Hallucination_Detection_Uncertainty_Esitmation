@@ -94,15 +94,27 @@ cd /home/msai/siddhart022/Hallucination_Detection_Uncertainty_Esitmation
   -m cverify.cli prepare-truthfulqa --output data/truthfulqa.jsonl
 ```
 
-The included array launcher uses nine independent GPU jobs of at most 100
+The included array launcher uses nine independent GPU shards of at most 100
 questions, so no single extraction job approaches the six-hour cluster limit.
 It uses the existing HaloScope BLEURT-20 checkpoint to label generated answers;
-exact match is not appropriate for TruthfulQA's sentence-style answers.
+exact match is not appropriate for TruthfulQA's sentence-style answers. Because
+this cluster permits only two submitted jobs at once, submit the shards in waves
+and wait for each wave to finish before submitting the next:
 
 ```bash
-ARRAY_JOB=$(sbatch --parsable scripts/slurm_truthfulqa_array.sbatch)
-ARRAY_JOB=${ARRAY_JOB%%;*}
-sbatch --dependency=afterok:"$ARRAY_JOB" scripts/slurm_truthfulqa_train.sbatch
+sbatch --array=0-1%2 scripts/slurm_truthfulqa_array.sbatch
+# Wait until both tasks finish successfully.
+sbatch --array=2-3%2 scripts/slurm_truthfulqa_array.sbatch
+# Wait, then repeat:
+sbatch --array=4-5%2 scripts/slurm_truthfulqa_array.sbatch
+sbatch --array=6-7%2 scripts/slurm_truthfulqa_array.sbatch
+sbatch --array=8 scripts/slurm_truthfulqa_array.sbatch
+```
+
+After shard 8 finishes successfully, submit the CPU merge/training job:
+
+```bash
+sbatch scripts/slurm_truthfulqa_train.sbatch
 ```
 
 Monitor all shards with:
@@ -117,6 +129,5 @@ sampling, or labeling settings. Final metrics are written to
 `runs/truthfulqa/full/results/metrics.json`. Preserve all nine shard directories
 until the merged file has been verified.
 
-The array is capped at one concurrent task (`%1`) to respect conservative cluster
-job limits. If your allocation permits two simultaneous GPU jobs, change the
-directive to `#SBATCH --array=0-8%2`.
+Do not queue the next wave or the training job early: pending tasks count toward
+the two-job submission limit.
