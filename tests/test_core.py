@@ -11,6 +11,20 @@ def test_answer_normalization_and_aliases():
     assert not exact_match("London", ("Paris",))
 
 
+def test_jsonl_offset(tmp_path):
+    from cverify.data import load_jsonl
+
+    path = tmp_path / "data.jsonl"
+    path.write_text(
+        '\n'.join(
+            f'{{"id":"q{i}","question":"Question {i}?","answers":["a{i}"]}}'
+            for i in range(5)
+        ),
+        encoding="utf-8",
+    )
+    assert [row.id for row in load_jsonl(path, limit=2, offset=2)] == ["q2", "q3"]
+
+
 def test_cluster_statistics():
     consistency, entropy = lexical_cluster_statistics(["Paris", "paris.", "London"])
     assert consistency == 2 / 3

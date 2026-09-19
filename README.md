@@ -82,3 +82,41 @@ the cached `metadata.jsonl` samples instead of relabeling or regenerating data.
 - The verifier score is self-verification, not a ground-truth label.
 - Hidden coordinates are model-specific; train separate probes per model.
 - An equal-cost comparison should account for all generated and scored tokens.
+
+## Full TruthfulQA experiment on Slurm
+
+Export the 817-question generation split once, without the legacy HaloScope
+dependency overlay:
+
+```bash
+cd /home/msai/siddhart022/Hallucination_Detection_Uncertainty_Esitmation
+/home/msai/siddhart022/LLM_Haloscope/.venv/bin/python \
+  -m cverify.cli prepare-truthfulqa --output data/truthfulqa.jsonl
+```
+
+The included array launcher uses nine independent GPU jobs of at most 100
+questions, so no single extraction job approaches the six-hour cluster limit.
+It uses the existing HaloScope BLEURT-20 checkpoint to label generated answers;
+exact match is not appropriate for TruthfulQA's sentence-style answers.
+
+```bash
+ARRAY_JOB=$(sbatch --parsable scripts/slurm_truthfulqa_array.sbatch)
+ARRAY_JOB=${ARRAY_JOB%%;*}
+sbatch --dependency=afterok:"$ARRAY_JOB" scripts/slurm_truthfulqa_train.sbatch
+```
+
+Monitor all shards with:
+
+```bash
+squeue -u "$USER"
+tail -f logs/cverify-tqa-ARRAY_JOB_0.out
+```
+
+The merge step rejects duplicate question IDs and mismatched model, layer,
+sampling, or labeling settings. Final metrics are written to
+`runs/truthfulqa/full/results/metrics.json`. Preserve all nine shard directories
+until the merged file has been verified.
+
+The array is capped at one concurrent task (`%1`) to respect conservative cluster
+job limits. If your allocation permits two simultaneous GPU jobs, change the
+directive to `#SBATCH --array=0-8%2`.
