@@ -1,7 +1,7 @@
 import math
 
 from cverify.data import exact_match, normalize_answer
-from cverify.prompts import CONTROL_TEMPLATES, VERIFY_TEMPLATES, evaluation_prompt
+from cverify.prompts import CONTROL_TEMPLATES, VERIFY_TEMPLATES, evaluation_prompt, generation_prompt
 from cverify.signals import lexical_cluster_statistics, rejection_and_disagreement
 
 
@@ -41,3 +41,14 @@ def test_prompts_are_paired_and_share_cue():
     assert len(VERIFY_TEMPLATES) == len(CONTROL_TEMPLATES) == 3
     prompt = evaluation_prompt("Q?", "A", VERIFY_TEMPLATES[0])
     assert prompt.endswith("Label:")
+
+
+def test_generation_prompt_profiles():
+    brief = generation_prompt("Can reindeer fly?")
+    sentence = generation_prompt("Can reindeer fly?", "complete-sentence")
+    assert brief == (
+        "Answer the factual question briefly. Give only the answer and no explanation.\n"
+        "Question: Can reindeer fly?\nAnswer:"
+    )
+    assert "one complete sentence" in sentence
+    assert sentence.endswith("Question: Can reindeer fly?\nAnswer:")

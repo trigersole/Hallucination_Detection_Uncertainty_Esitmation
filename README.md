@@ -131,3 +131,47 @@ until the merged file has been verified.
 
 Do not queue the next wave or the training job early: pending tasks count toward
 the two-job submission limit.
+
+### Complete-sentence answer condition
+
+Keep the original brief-answer run unchanged. After pulling the latest code,
+export a separate run name and the new generation prompt in the shell from which
+you submit the jobs:
+
+```bash
+export CVERIFY_RUN_NAME=truthfulqa_sentence
+export CVERIFY_GENERATION_PROMPT=complete-sentence
+```
+
+Run shard 0 first as a pilot. Check `runs/truthfulqa_sentence/shard_0/metadata.jsonl`
+for complete answers and truncation before committing to the other shards. Keep
+the same settings for every shard; the merge command rejects mismatched prompt
+profiles and maximum token limits.
+
+```bash
+sbatch --export=ALL --array=0 scripts/slurm_truthfulqa_array.sbatch
+```
+
+If the pilot looks good, submit the remaining shards in waves, waiting for each
+wave to finish successfully before the next one:
+
+```bash
+sbatch --export=ALL --array=1 scripts/slurm_truthfulqa_array.sbatch
+sbatch --export=ALL --array=2-3%2 scripts/slurm_truthfulqa_array.sbatch
+sbatch --export=ALL --array=4-5%2 scripts/slurm_truthfulqa_array.sbatch
+sbatch --export=ALL --array=6-7%2 scripts/slurm_truthfulqa_array.sbatch
+sbatch --export=ALL --array=8 scripts/slurm_truthfulqa_array.sbatch
+```
+
+After shard 8 finishes, merge and train on the prespecified seed-42 split:
+512 training, 100 development, and 205 test questions.
+
+```bash
+sbatch --export=ALL scripts/slurm_truthfulqa_train.sbatch
+```
+
+Results go to `runs/truthfulqa_sentence/full/results_seed_42_val100_test25/`.
+The original `runs/truthfulqa/` directory is untouched. The sentence prompt
+encourages, but cannot guarantee, complete sentences. BLEURT is still an
+imperfect correctness labeler: audit changed labels and ambiguous answers
+before treating a detector score as factual hallucination performance.

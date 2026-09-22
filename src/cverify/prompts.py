@@ -24,9 +24,19 @@ def evaluation_prompt(question: str, answer: str, instruction: str) -> str:
     )
 
 
-def generation_prompt(question: str) -> str:
-    return (
-        "Answer the factual question briefly. Give only the answer and no explanation.\n"
-        f"Question: {question}\nAnswer:"
-    )
+GENERATION_INSTRUCTIONS = {
+    "brief": "Answer the factual question briefly. Give only the answer and no explanation.",
+    "complete-sentence": (
+        "Answer the factual question in one complete sentence. "
+        "Do not reply with only yes, no, or an isolated name. "
+        "State the answer explicitly without adding unsupported details."
+    ),
+}
 
+
+def generation_prompt(question: str, style: str = "brief") -> str:
+    try:
+        instruction = GENERATION_INSTRUCTIONS[style]
+    except KeyError as exc:
+        raise ValueError(f"Unknown generation prompt style: {style}") from exc
+    return f"{instruction}\nQuestion: {question}\nAnswer:"

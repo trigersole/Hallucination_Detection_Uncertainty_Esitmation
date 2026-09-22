@@ -34,7 +34,7 @@ def run_extraction(args) -> None:
     total_tokens = 0
     with metadata_path.open("w", encoding="utf-8") as meta:
         for index, example in enumerate(tqdm(examples, desc="Extracting")):
-            prompt = generation_prompt(example.question)
+            prompt = generation_prompt(example.question, args.generation_prompt)
             original = adapter.generate(prompt, args.layers, temperature=0.0, max_new_tokens=args.max_new_tokens, seed=args.seed + index)
             samples = [original]
             for sample_index in range(1, args.samples):
@@ -75,6 +75,7 @@ def run_extraction(args) -> None:
             rows["difference_state"].append(difference_flat)
             meta.write(json.dumps({
                 "id": example.id, "question": example.question, "aliases": example.answers,
+                "generation_prompt": args.generation_prompt,
                 "answer": original.text, "sampled_answers": [item.text for item in samples],
                 "is_correct": is_correct, "labeler": labeler.name, "label_score": label_score,
                 "label_threshold": args.label_threshold,
@@ -86,6 +87,7 @@ def run_extraction(args) -> None:
     np.savez_compressed(output / "features.npz", **arrays)
     (output / "manifest.json").write_text(json.dumps({
         "model": args.model, "data": str(Path(args.data).resolve()), "examples": len(examples),
+        "generation_prompt": args.generation_prompt, "max_new_tokens": args.max_new_tokens,
         "offset": args.offset, "labeler": labeler.name, "label_threshold": args.label_threshold,
         "samples": args.samples, "temperature": args.temperature, "layers": args.layers,
         "seed": args.seed, "approximate_processed_label_and_generated_tokens": total_tokens,

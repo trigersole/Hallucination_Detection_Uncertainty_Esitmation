@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 
+from .prompts import GENERATION_INSTRUCTIONS
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cverify", description="Controlled verification hallucination detector")
@@ -12,6 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument("--data", required=True)
     extract.add_argument("--model", required=True)
     extract.add_argument("--output", required=True)
+    extract.add_argument("--generation-prompt", choices=GENERATION_INSTRUCTIONS, default="brief")
     extract.add_argument("--limit", type=int)
     extract.add_argument("--offset", type=int, default=0)
     extract.add_argument("--samples", type=int, default=5)

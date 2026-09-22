@@ -14,7 +14,10 @@ def run_merge(args) -> None:
     if len(runs) < 2:
         raise ValueError("Provide at least two shard directories")
     manifests = [json.loads((run / "manifest.json").read_text(encoding="utf-8")) for run in runs]
-    comparable = ("model", "data", "samples", "temperature", "layers", "labeler", "label_threshold")
+    comparable = (
+        "model", "data", "generation_prompt", "max_new_tokens", "samples",
+        "temperature", "layers", "labeler", "label_threshold",
+    )
     for key in comparable:
         values = [manifest.get(key) for manifest in manifests]
         if any(value != values[0] for value in values[1:]):
