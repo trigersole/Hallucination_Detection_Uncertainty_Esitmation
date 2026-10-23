@@ -14,6 +14,7 @@ class Example:
     id: str
     question: str
     answers: tuple[str, ...]
+    incorrect_answers: tuple[str, ...] = ()
 
 
 def normalize_answer(text: str) -> str:
@@ -44,7 +45,8 @@ def load_jsonl(path: str | Path, limit: int | None = None, offset: int = 0) -> l
             answers = raw.get("answers")
             if not isinstance(answers, list) or not answers:
                 raise ValueError(f"Line {line_number}: 'answers' must be a non-empty list")
-            rows.append(Example(str(raw.get("id", line_number)), raw["question"], tuple(map(str, answers))))
+            rows.append(Example(str(raw.get("id", line_number)), raw["question"], tuple(map(str, answers)),
+                                tuple(map(str, raw.get("incorrect_answers", [])))))
             if limit is not None and len(rows) >= limit:
                 break
     if not rows:
@@ -61,7 +63,8 @@ def export_truthfulqa(output: str | Path) -> int:
     dataset = load_dataset("truthfulqa/truthful_qa", "generation", split="validation")
     destination = Path(output)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with destination.open("w", encoding="utf-8") as handle:
+    temporary = destination.with_name(destination.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
         for index, row in enumerate(dataset):
             aliases = list(row["correct_answers"])
             best = str(row["best_answer"])
@@ -73,5 +76,7 @@ def export_truthfulqa(output: str | Path) -> int:
                 "answers": aliases,
                 "best_answer": best,
                 "category": row.get("category"),
+                "incorrect_answers": list(row.get("incorrect_answers", [])),
             }, ensure_ascii=False) + "\n")
+    temporary.replace(destination)
     return len(dataset)

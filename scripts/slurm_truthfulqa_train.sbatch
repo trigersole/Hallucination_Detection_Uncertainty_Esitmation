@@ -3,7 +3,7 @@
 #SBATCH --output=logs/cverify-train-%j.out
 #SBATCH --error=logs/cverify-train-%j.err
 #SBATCH --time=01:00:00
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=1
 #SBATCH --mem=32G
 
 set -euo pipefail

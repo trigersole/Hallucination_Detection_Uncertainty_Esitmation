@@ -1,5 +1,12 @@
 # Controlled Verification for Hallucination Detection
 
+**Recommended runner:** `bash scripts/run_assessment.sh --background`.
+This supersedes the manual-wave submission instructions for new runs. It uses
+one CPU per batch job, chat-formatted generation with token-limit retries,
+per-question checkpoints, automatic scheduling, and an audited-label gate.
+See "Single resumable cluster runner" at the end of this document. Historical
+BLEURT-based metrics must not be treated as validated factual-correctness results.
+
 This repository implements the pilot proposed in **“Beyond Generation
 Confidence: Controlled Verification for Uncertainty-Based Hallucination
 Detection.”** It keeps a causal language model frozen and extracts signals from:
@@ -379,3 +386,150 @@ python -m cverify.cli extract --data data/example.jsonl --model MODEL \
   --output runs/assessment_smoke --generation-prompt concise \
   --evaluation-profile assessment-v3 --layers -1 -4 -8 15 --samples 2
 ```
+
+## Single resumable cluster runner (recommended)
+
+Run from the existing cluster repository on `codex/concise-assessment-l15`:
+
+```bash
+git pull --ff-only
+bash scripts/run_assessment.sh --background
+```
+
+Do not submit the controller itself with `sbatch`. The lightweight controller
+runs on the login host and submits its workers to Slurm. The same file is used
+as the workers' batch script. It submits at most two jobs at once, counting other
+jobs belonging to your user. GPU extraction workers request one GPU, **one CPU**,
+32 GB RAM and 05:50:00. Finalization/training workers request one CPU and no GPU.
+Thread-count environment variables are set to one. All legacy `.sbatch` files
+also now request one CPU.
+
+No pip installation or manual exports are required for the configured cluster.
+The script uses `/home/msai/siddhart022/LLM_Haloscope/.venv/bin/python`, sets
+`PYTHONPATH` to this checkout's `src`, and avoids the old BLEURT dependency
+overlay. Override `CVERIFY_PYTHON` if that executable is elsewhere.
+
+The new default run directory is:
+
+```text
+runs/truthfulqa_concise_chat_audit_l15/
+```
+
+This deliberately does not inherit `CVERIFY_RUN_NAME`, `CVERIFY_MAX_NEW_TOKENS`,
+`CVERIFY_SHARD_SIZE`, or reference-run exports left over from earlier experiments.
+It preserves all previous runs. Settings are frozen in `workflow_config.json`:
+
+- Llama-2-7B-Chat with tokenizer chat formatting; no raw completion prompting.
+- Exact concise generation instruction and verification/control/none tasks from
+  `assessment-v3`; same original answer in all three assessment conditions.
+- `Assessment:` is an **assistant prefill after the user turn**, not a cue
+  trapped inside the user instruction. No assessment continuation is generated.
+- If an older official Llama-2 cache has no chat template, use the explicit
+  single-user `[INST]` format from [Meta's reference implementation](https://github.com/meta-llama/llama/blob/main/llama/generation.py).
+  Unknown models without templates fail rather than silently using raw text.
+- Five answers per question; one greedy plus four samples at temperature 0.7.
+- Initial generation ceiling **256 new tokens**. A length-stopped answer is
+  regenerated at 512, then 1,024 tokens using the same prompt and seed. Text is
+  not silently cut or edited. EOS at the budget boundary is considered completion.
+- Metadata records final token IDs/counts, stopping reason, retry history, and
+  suspected extra `Question:` continuations. A higher ceiling does not guarantee
+  completeness; unresolved outputs remain flagged for exclusion.
+- Generation states are read at the last non-EOS answer token. Assessment states
+  are read at the last token of the shared assistant `Assessment:` prefix.
+- Layers `-1 -4 -8 15`; layer 15 means hidden-state tuple index 15, after the 15th
+  transformer block. Seeds are based on global question position, not shard-local
+  position, so repartitioning does not redefine the random seed for a question.
+- 25 questions per shard (33 shards for 817 questions). Smaller shards accommodate
+  longer generation under the six-hour limit; the controller handles all waves.
+
+If needed, set overrides **before the first invocation**, for example:
+
+```bash
+export CVERIFY_PIPELINE_RUN=truthfulqa_concise_chat_audit_l15
+export CVERIFY_PIPELINE_INITIAL_TOKENS=256
+export CVERIFY_PIPELINE_MAX_TOKENS=1024
+export CVERIFY_PIPELINE_SHARD_SIZE=25
+# Optional: use an existing input file rather than exporting TruthfulQA:
+# export CVERIFY_PIPELINE_DATA=/absolute/path/to/truthfulqa.jsonl
+bash scripts/run_assessment.sh --background
+```
+
+If no input path is supplied, the runner downloads/exports TruthfulQA once into
+the new run directory, including correct and incorrect references. A supplied
+existing JSONL file can omit incorrect references. The controller freezes the
+dataset hash, source-code hash, and settings; workers reject subsequent changes.
+Model commit, library versions and exact chat template are also checked across
+extraction checkpoints and shards. Do not pull/edit code while a run is active.
+
+### Resume and monitor
+
+```bash
+tail -f logs/assessment-controller.log
+bash scripts/run_assessment.sh --status
+squeue -u "$USER"
+```
+
+Start or resume with the **same command**:
+
+```bash
+bash scripts/run_assessment.sh --background
+```
+
+There is no need to track wave numbers or manually queue merge/training.
+An OS lock rejects duplicate controllers. The controller persists submitted job
+IDs; it does not duplicate active jobs and reserves slots for jobs not yet visible
+in `squeue`. It uses `sacct` to distinguish terminal jobs, retries incomplete
+workers up to three times per invocation, and stops on unknown scheduler state
+rather than risking duplicate work. After fixing an external problem, rerun the
+same command. Existing per-question checkpoints and completed training layer
+conditions are reused. `nohup` handles ordinary terminal disconnection, but host
+reboots or site policies can still terminate the controller; restart it to resume.
+
+Each question is saved atomically under `shard_N/checkpoints/`. Interrupted output
+files are rebuilt from these checkpoints. A killed question can be recomputed;
+earlier committed questions are retained. Old non-checkpointed runs are not
+silently adopted. Use a new `CVERIFY_PIPELINE_RUN` if changing code/settings.
+
+### Correctness review is required before metrics
+
+BLEURT similarity is no longer the new runner's correctness target. Extraction
+writes `is_correct: null` and `y_error=-1`. Training refuses these unreviewed
+targets. After extraction, one CPU job merges the shards and writes:
+
+```text
+runs/truthfulqa_concise_chat_audit_l15/review.jsonl
+```
+
+Each line contains the question, original generated answer, references, quality
+flags, and fields to complete:
+
+```json
+{"judgment": "incorrect", "reviewer": "reviewer-name-or-audited-label-source", "notes": "Answer contradicts the reference on the date."}
+```
+
+Edit those fields **in each existing record**, preserving IDs, question/answer
+text, and `sample_hash`. Allowed judgments are `correct`, `incorrect`, `ambiguous`,
+`refusal`, and `exclude`. The reference lists are evidence to inspect, not an
+infallible automatic judge. Review the whole answer, including extra claims.
+For thesis results, use documented human adjudication of uncertain cases; the
+software cannot establish factual correctness from an unvalidated proxy.
+
+The controller exits with status 2 and `needs_review` when judgments are pending;
+that is an intentional review gate, not an extraction failure. It will not
+overwrite your edits or fabricate metrics. `review.summary.json` reports counts.
+After completing the review, run the same background command again. It skips
+GPU extraction, applies the audited targets, and submits CPU training automatically.
+
+Answers marked ambiguous/refusal/exclude are omitted from the binary evaluation.
+Questions with empty answers, non-EOS generations (including sampled answers),
+or extra generated questions are excluded even if their correctness was reviewed;
+these would otherwise contaminate generation-consistency features. Exclusions
+and label provenance are recorded. Metrics describe this retained population,
+not the excluded questions. With exclusions, the 25% test and development
+fraction remain fixed but split counts can differ from 512/100/205.
+
+Results are versioned by review-file hash under `audited/<hash>/`, for original
+layers, layer 15, and all four layers. Editing labels creates a new result version
+rather than replacing an earlier reviewed result. No new GPU generation is needed
+for label corrections. This still uses lexical entropy, not full semantic entropy;
+regularization/learning-curve comparisons remain separate research work.

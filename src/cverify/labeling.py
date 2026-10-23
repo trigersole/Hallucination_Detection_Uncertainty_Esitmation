@@ -5,6 +5,14 @@ from __future__ import annotations
 from .data import exact_match
 
 
+class DeferredLabeler:
+    """Do not turn an unvalidated similarity score into a correctness target."""
+    name = "deferred"
+
+    def score(self, answer: str, aliases: tuple[str, ...]):
+        return None
+
+
 class ExactMatchLabeler:
     name = "exact_match"
 
@@ -41,6 +49,8 @@ class BleurtLabeler:
 
 
 def build_labeler(kind: str, *, bleurt_model: str | None, device: str):
+    if kind == "deferred":
+        return DeferredLabeler()
     if kind == "exact":
         return ExactMatchLabeler()
     if not bleurt_model:

@@ -109,7 +109,9 @@ def run_training(args) -> None:
             raise ValueError("Layer selection requires a manifest with extracted layer indices")
         data = select_layers(data, manifest["layers"], selected)
     y = data["y_error"].astype(int)
-    if len(y) < 20 or np.min(np.bincount(y)) < 5:
+    if not np.isin(y, [0, 1]).all():
+        raise ValueError("Correctness labels are missing/unreviewed; apply audited labels before training")
+    if len(y) < 20 or len(np.unique(y)) != 2 or np.min(np.bincount(y)) < 5:
         raise ValueError("Need at least 20 examples and 5 examples of each class to split and calibrate reliably")
     indices = np.arange(len(y))
     train_idx, test_idx = train_test_split(indices, test_size=args.test_size, random_state=args.seed, stratify=y)
@@ -127,9 +129,12 @@ def run_training(args) -> None:
             "selected_layers": selected if selected is not None else manifest.get("layers"),
             "evaluation": manifest.get("evaluation"),
             "generation_prompt": manifest.get("generation_prompt"),
+            "labeler": manifest.get("labeler"), "audit": manifest.get("audit"),
             "feature_dimensions": {name: int(values.shape[1]) for name, values in feature_sets.items()},
         },
         "split": {"train": train_idx.tolist(), "dev": dev_idx.tolist(), "test": test_idx.tolist()},
+        "class_counts": {name: {"correct": int((y[idx] == 0).sum()), "incorrect": int((y[idx] == 1).sum())}
+                         for name, idx in (("all", indices), ("train", train_idx), ("dev", dev_idx), ("test", test_idx))},
         "difficult_subset_definition": {
             "generation_mean_log_probability_gte": args.confidence_logprob,
             "consistency_gte": args.consistency,
