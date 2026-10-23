@@ -18,10 +18,21 @@ HALOSCOPE_OFFICIAL="${HALOSCOPE_OFFICIAL:-/home/msai/siddhart022/haloscope-offic
 MODEL="${CVERIFY_MODEL:-meta-llama/Llama-2-7b-chat-hf}"
 RUN_NAME="${CVERIFY_RUN_NAME:-truthfulqa}"
 GENERATION_PROMPT="${CVERIFY_GENERATION_PROMPT:-brief}"
+EVALUATION_PROFILE="${CVERIFY_EVALUATION_PROFILE:-legacy}"
+read -r -a LAYERS <<< "${CVERIFY_LAYERS:--1 -4 -8}"
 MAX_NEW_TOKENS="${CVERIFY_MAX_NEW_TOKENS:-32}"
 SHARD_SIZE="${CVERIFY_SHARD_SIZE:-100}"
 OFFSET=$((SLURM_ARRAY_TASK_ID * SHARD_SIZE))
 OUTPUT="$PROJECT/runs/$RUN_NAME/shard_${SLURM_ARRAY_TASK_ID}"
+REFERENCE_ARGS=()
+if [[ -n "${CVERIFY_REFERENCE_RUN:-}" ]]; then
+    REFERENCE_ARGS=(--reference-run "$CVERIFY_REFERENCE_RUN")
+fi
+
+if [[ ( "$RUN_NAME" == "truthfulqa" || "$RUN_NAME" == "truthfulqa_sentence" ) && "$EVALUATION_PROFILE" != "legacy" ]]; then
+    echo "ERROR: Choose a new run name for a corrected evaluation profile" >&2
+    exit 2
+fi
 
 if [[ "$RUN_NAME" == "truthfulqa" && "$GENERATION_PROMPT" != "brief" ]]; then
     echo "ERROR: Refusing to put a non-brief prompt in the original truthfulqa run" >&2
@@ -40,7 +51,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd "$PROJECT"
 mkdir -p logs "runs/$RUN_NAME"
 
-echo "Job: ${SLURM_JOB_ID:-unknown}; task: $SLURM_ARRAY_TASK_ID; offset: $OFFSET; run: $RUN_NAME; prompt: $GENERATION_PROMPT"
+echo "Job: ${SLURM_JOB_ID:-unknown}; task: $SLURM_ARRAY_TASK_ID; offset: $OFFSET; run: $RUN_NAME; prompt: $GENERATION_PROMPT; evaluation: $EVALUATION_PROFILE; layers: ${LAYERS[*]}"
 nvidia-smi
 
 srun "$PYTHON" -m cverify.cli extract \
@@ -48,12 +59,14 @@ srun "$PYTHON" -m cverify.cli extract \
   --model "$MODEL" \
   --output "$OUTPUT" \
   --generation-prompt "$GENERATION_PROMPT" \
+  --evaluation-profile "$EVALUATION_PROFILE" \
+  "${REFERENCE_ARGS[@]}" \
   --offset "$OFFSET" \
   --limit "$SHARD_SIZE" \
   --samples 5 \
   --temperature 0.7 \
   --max-new-tokens "$MAX_NEW_TOKENS" \
-  --layers -1 -4 -8 \
+  --layers "${LAYERS[@]}" \
   --dtype float16 \
   --device auto \
   --labeler bleurt \

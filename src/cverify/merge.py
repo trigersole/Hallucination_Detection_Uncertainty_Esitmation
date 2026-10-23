@@ -16,7 +16,8 @@ def run_merge(args) -> None:
     manifests = [json.loads((run / "manifest.json").read_text(encoding="utf-8")) for run in runs]
     comparable = (
         "model", "data", "generation_prompt", "max_new_tokens", "samples",
-        "temperature", "layers", "labeler", "label_threshold",
+        "temperature", "layers", "labeler", "label_threshold", "evaluation",
+        "layer_index_convention", "resolved_layers", "generation_prompt_template",
     )
     for key in comparable:
         values = [manifest.get(key) for manifest in manifests]
@@ -52,6 +53,7 @@ def run_merge(args) -> None:
         "approximate_processed_label_and_generated_tokens": sum(
             item.get("approximate_processed_label_and_generated_tokens", 0) for item in manifests
         ),
+        "assessment_prompt_input_tokens": sum(item.get("assessment_prompt_input_tokens", 0) for item in manifests),
     })
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(f"Merged {len(runs)} shards and {len(metadata)} examples into {output}")

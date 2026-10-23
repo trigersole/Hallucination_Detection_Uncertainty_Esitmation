@@ -77,14 +77,29 @@ class CausalLMAdapter:
         }
         return GeneratedAnswer(text, sum(token_logps) / max(1, len(token_logps)), hidden, len(token_logps))
 
-    def label_probability_and_hidden(self, prompt: str, layers: Sequence[int]) -> tuple[float, dict[int, "object"], int]:
+    def prompt_hidden(self, prompt: str, layers: Sequence[int]) -> tuple[dict[int, "object"], int]:
+        """Read the final prompt position in one forward pass; generate/score no labels."""
+        encoded = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        with self.torch.inference_mode():
+            out = self.model(**encoded, output_hidden_states=True, use_cache=False)
+        resolved = self._resolve_layers(layers, len(out.hidden_states))
+        hidden = {
+            requested: out.hidden_states[actual][0, -1].float().cpu().numpy()
+            for requested, actual in zip(layers, resolved)
+        }
+        return hidden, int(encoded.input_ids.shape[1])
+
+    def label_probability_and_hidden(
+        self, prompt: str, layers: Sequence[int],
+        labels: tuple[str, str] = (" Correct", " Incorrect"),
+    ) -> tuple[float, dict[int, "object"], int]:
         """Score complete label strings and return hidden states at the shared cue."""
         torch = self.torch
         prompt_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(self.device)
         label_scores = []
         total_scored = 0
         hidden = None
-        for label in (" Correct", " Incorrect"):
+        for label in labels:
             label_ids = self.tokenizer(label, add_special_tokens=False, return_tensors="pt").input_ids.to(self.device)
             ids = torch.cat([prompt_ids, label_ids], dim=1)
             with torch.inference_mode():

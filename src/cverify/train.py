@@ -38,35 +38,97 @@ def _bootstrap(y: np.ndarray, p: np.ndarray, repetitions: int, seed: int) -> dic
     return {key: [float(np.quantile(vals, 0.025)), float(np.quantile(vals, 0.975))] for key, vals in values.items() if vals}
 
 
+def select_layers(data: dict[str, np.ndarray], available: list[int], requested: list[int]) -> dict[str, np.ndarray]:
+    """Slice [prompt pair, layer, hidden coordinate] without mixing pair blocks."""
+    if not requested or len(set(requested)) != len(requested):
+        raise ValueError("Select at least one layer, with no duplicates")
+    missing = set(requested) - set(available)
+    if missing:
+        raise ValueError(f"Requested layers were not extracted: {sorted(missing)}")
+    positions = [available.index(layer) for layer in requested]
+    hidden_size, remainder = divmod(data["generation_state"].shape[1], len(available))
+    if remainder or hidden_size == 0:
+        raise ValueError("Generation-state width does not match manifest layers")
+    selected = dict(data)
+    for name in (
+        "generation_state", "verify_state", "control_state", "difference_state",
+        "none_state", "verify_none_difference_state", "control_none_difference_state",
+    ):
+        if name not in data:
+            continue
+        values = data[name]
+        blocks, remainder = divmod(values.shape[1], len(available) * hidden_size)
+        if remainder or blocks == 0:
+            raise ValueError(f"{name} width does not match manifest layers")
+        shaped = values.reshape(len(values), blocks, len(available), hidden_size)
+        selected[name] = shaped[:, :, positions, :].reshape(len(values), -1)
+    selected["concat_state"] = np.c_[selected["verify_state"], selected["control_state"]]
+    return selected
+
+
+def feature_sets_for(data: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Build score-based or representation-only comparisons from their real inputs."""
+    baseline = np.c_[data["generation"], data["generation_state"]]
+    feature_sets = {
+        "generation_only": data["generation"],
+        "generation_state": data["generation_state"],
+        "generation_behavior_plus_state": baseline,
+        "verify_state": data["verify_state"],
+        "control_state": data["control_state"],
+        "concat_state": data["concat_state"],
+        "difference_state": data["difference_state"],
+    }
+    if "verification_scores" in data:
+        feature_sets.update({
+            "p_true_ensemble": data["verification_scores"],
+            "generation_plus_verification": np.c_[data["generation"], data["verification_scores"]],
+            "full_controlled": np.c_[baseline, data["verification_scores"], data["difference_state"]],
+        })
+    else:
+        feature_sets.update({
+            "none_state": data["none_state"],
+            "verify_none_concat_state": np.c_[data["verify_state"], data["none_state"]],
+            "control_none_concat_state": np.c_[data["control_state"], data["none_state"]],
+            "verify_none_difference_state": data["verify_none_difference_state"],
+            "control_none_difference_state": data["control_none_difference_state"],
+            "generation_behavior_state_plus_verify_control_difference": np.c_[baseline, data["difference_state"]],
+            "generation_behavior_state_plus_verify_none_difference": np.c_[baseline, data["verify_none_difference_state"]],
+        })
+    return feature_sets
+
+
 def run_training(args) -> None:
     run = Path(args.run)
-    data = np.load(run / "features.npz")
+    with np.load(run / "features.npz") as archive:
+        data = {key: archive[key] for key in archive.files}
+    manifest_path = run / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    selected = getattr(args, "layers", None)
+    if selected is not None:
+        if "layers" not in manifest:
+            raise ValueError("Layer selection requires a manifest with extracted layer indices")
+        data = select_layers(data, manifest["layers"], selected)
     y = data["y_error"].astype(int)
     if len(y) < 20 or np.min(np.bincount(y)) < 5:
         raise ValueError("Need at least 20 examples and 5 examples of each class to split and calibrate reliably")
     indices = np.arange(len(y))
     train_idx, test_idx = train_test_split(indices, test_size=args.test_size, random_state=args.seed, stratify=y)
     train_idx, dev_idx = train_test_split(train_idx, test_size=args.dev_size, random_state=args.seed + 1, stratify=y[train_idx])
-    feature_sets = {
-        "generation_only": data["generation"],
-        "generation_state": data["generation_state"],
-        "generation_behavior_plus_state": np.c_[data["generation"], data["generation_state"]],
-        "p_true_ensemble": data["verification_scores"],
-        "generation_plus_verification": np.c_[data["generation"], data["verification_scores"]],
-        "verify_state": data["verify_state"],
-        "control_state": data["control_state"],
-        "concat_state": data["concat_state"],
-        "difference_state": data["difference_state"],
-        "full_controlled": np.c_[
-            data["generation"], data["generation_state"],
-            data["verification_scores"], data["difference_state"]
-        ],
-    }
+    feature_sets = feature_sets_for(data)
     difficult_mask = (
         (data["generation"][:, 0] >= args.confidence_logprob)
         & (data["generation"][:, 1] >= args.consistency)
     )
     report = {
+        "configuration": {
+            "seed": args.seed, "c": args.c, "test_size": args.test_size,
+            "dev_size": args.dev_size, "bootstrap": args.bootstrap,
+            "extracted_layers": manifest.get("layers"),
+            "selected_layers": selected if selected is not None else manifest.get("layers"),
+            "evaluation": manifest.get("evaluation"),
+            "generation_prompt": manifest.get("generation_prompt"),
+            "feature_dimensions": {name: int(values.shape[1]) for name, values in feature_sets.items()},
+        },
         "split": {"train": train_idx.tolist(), "dev": dev_idx.tolist(), "test": test_idx.tolist()},
         "difficult_subset_definition": {
             "generation_mean_log_probability_gte": args.confidence_logprob,
