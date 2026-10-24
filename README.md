@@ -596,3 +596,33 @@ Do not remove `full/features.npz`, completed shard files/checkpoints, or
 `review.jsonl`. If more space is needed, inspect the account's quota and storage
 locations rather than deleting source data blindly. A run still needs a small
 amount of free space for code updates, reviewed metadata, labels, logs and metrics.
+
+### Training representation subspaces
+
+Compare the top 10 covariance eigenvectors of none, verification and control using
+the exact saved seed-42 training rows (no development or test rows):
+
+```bash
+mkdir -p logs
+sbatch scripts/compare_subspaces.sbatch
+```
+
+This is a standalone one-CPU analysis with no GPU request or feature extraction.
+It finds the completed audited run from `finalize_status.json`. To select another
+workflow run, pass its directory as the first batch-script argument. The Python
+entry point also accepts `--metrics` for another saved training split and `--k`.
+
+The audited directory receives `subspace_top10_train.json`, containing separate
+results for every extracted layer, the original three layers and all layers.
+Each condition is centered on its own training mean in the shared raw hidden
+coordinate system, without coordinate standardization. Eigenspaces are computed
+using the sample Gram matrix, avoiding a large feature covariance matrix. Outputs
+include explained variance, the relative eigengap at the component cutoff,
+absolute 10-by-10 eigenvector cosine matrices, principal angles and subspace
+overlap (mean squared cosine of principal angles). Overlap is 1 for identical
+subspaces and 0 for orthogonal subspaces; it is invariant to basis signs and
+rotations. Small cutoff eigengaps indicate sensitivity to the arbitrary top-10
+boundary. High overlap describes dominant variance geometry and does not prove
+equal correctness information or uncertainty. Centering removes mean shifts;
+these results do not describe condition mean differences. The source features
+and original metrics remain unchanged.
