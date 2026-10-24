@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .storage import atomic_json, atomic_npz, digest
+from .storage import atomic_json, atomic_npz, digest, sha256_file
 
 
 def read_records(path: Path) -> list[dict]:
@@ -82,9 +82,11 @@ def apply_review(run: Path, review_path: Path, output: Path) -> dict:
         return summary
     output.mkdir(parents=True, exist_ok=True)
     with np.load(run / "features.npz", allow_pickle=False) as archive:
-        arrays = {key: archive[key][kept] for key in archive.files}
-    arrays["y_error"] = np.asarray(labels, dtype=np.int64)
-    atomic_npz(output / "features.npz", **arrays)
+        if len(archive["y_error"]) != len(rows):
+            raise ValueError("Source metadata and feature row counts differ")
+    # Keep the large archive in place; audited versions store only indices and labels.
+    atomic_npz(output / "labels.npz", source_indices=np.asarray(kept, dtype=np.int64),
+               y_error=np.asarray(labels, dtype=np.int64))
     temporary = output / "metadata.jsonl.tmp"
     with temporary.open("w", encoding="utf-8") as handle:
         for row in audited:
@@ -92,6 +94,10 @@ def apply_review(run: Path, review_path: Path, output: Path) -> dict:
     temporary.replace(output / "metadata.jsonl")
     manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
     manifest.update({"examples": len(kept), "labeler": "audited_labels", "label_threshold": None,
-                     "audit": summary, "source_run": str(run.resolve())})
+                     "audit": summary, "source_run": str(run.resolve()),
+                     "feature_storage": "indexed_view_v1",
+                     "feature_view": {"source_run": str(run.resolve()), "source_examples": len(rows),
+                                      "source_sha256": {name: sha256_file(run / name)
+                                                        for name in ("features.npz", "metadata.jsonl", "manifest.json")}}})
     atomic_json(output / "manifest.json", manifest)
     return summary

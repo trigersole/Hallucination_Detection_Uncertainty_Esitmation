@@ -12,6 +12,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
+from .features import load_run_features
+
 
 def _metrics(y: np.ndarray, p: np.ndarray) -> dict[str, float]:
     keep = np.argsort(p)[: max(1, int(np.ceil(0.8 * len(p))))]
@@ -99,10 +101,7 @@ def feature_sets_for(data: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
 
 def run_training(args) -> None:
     run = Path(args.run)
-    with np.load(run / "features.npz") as archive:
-        data = {key: archive[key] for key in archive.files}
-    manifest_path = run / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    data, manifest = load_run_features(run)
     selected = getattr(args, "layers", None)
     if selected is not None:
         if "layers" not in manifest:
@@ -130,6 +129,7 @@ def run_training(args) -> None:
             "evaluation": manifest.get("evaluation"),
             "generation_prompt": manifest.get("generation_prompt"),
             "labeler": manifest.get("labeler"), "audit": manifest.get("audit"),
+            "feature_storage": manifest.get("feature_storage", "physical_archive"),
             "feature_dimensions": {name: int(values.shape[1]) for name, values in feature_sets.items()},
         },
         "split": {"train": train_idx.tolist(), "dev": dev_idx.tolist(), "test": test_idx.tolist()},

@@ -565,3 +565,34 @@ tail -f logs/assessment-controller.log
 An unchanged review file with pending judgments still returns `needs_review`.
 The lock fix does not assign correctness labels or erase the history of failed
 jobs in Slurm accounting.
+
+### Disk-quota recovery and reviewed feature views
+
+Reviewed runs now store small `labels.npz` files containing retained source row
+indices and correctness labels. Their manifests reference the original merged
+`full/features.npz`, with SHA-256 checks of source features, metadata and manifest.
+Training reads and subsets those features in memory; it does not write another
+large feature archive for every review version. Keep the source `full/` directory:
+these reviewed datasets are indexed views, not independent copies. Existing
+physical archives remain supported by the training CLI.
+
+Atomic JSON/NPZ writers remove incomplete temporary files after an exception and
+preserve any previous completed target. Quota/capacity failures in finalization
+are reported as `storage_blocked` with exit code 75; the controller stops automatic
+retries for that failure until the user resumes after making space available.
+
+An older failed job may have left a large **incomplete** `features.npz.tmp` under
+an `audited/<review-hash>/` directory. After confirming that no worker is writing
+it, remove only that failed temporary copy, not the extraction or review data:
+
+```bash
+RUN=runs/truthfulqa_concise_chat_audit_l15
+find "$RUN/audited" -type f -name 'features.npz.tmp' -print -delete
+git pull --ff-only
+bash scripts/run_assessment.sh --background --finalize-existing
+```
+
+Do not remove `full/features.npz`, completed shard files/checkpoints, or
+`review.jsonl`. If more space is needed, inspect the account's quota and storage
+locations rather than deleting source data blindly. A run still needs a small
+amount of free space for code updates, reviewed metadata, labels, logs and metrics.

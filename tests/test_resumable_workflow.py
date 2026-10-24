@@ -194,9 +194,10 @@ def test_full_workflow_waits_for_review_then_resumes_training(tmp_path, monkeypa
     training = []
     def train(args):
         training.append(args.layers)
-        with np.load(Path(args.run) / "features.npz") as data:
-            assert len(data["y_error"]) == 39
-            assert set(data["y_error"]) == {0, 1}
+        from cverify.features import load_run_features
+        data, manifest = load_run_features(Path(args.run))
+        assert len(data["y_error"]) == 39
+        assert set(data["y_error"]) == {0, 1}
         Path(args.output).mkdir(parents=True)
     monkeypatch.setattr(workflow, "run_training", train)
     workflow.finalize_worker(config)
@@ -302,8 +303,10 @@ def test_capped_samples_are_excluded_even_after_correctness_review(tmp_path):
     path.write_text("\n".join(json.dumps(row) for row in reviews))
     summary = apply_review(source, path, tmp_path / "audited")
     assert summary["included"] == 1 and summary["counts"]["quality_excluded"] == 1
-    with np.load(tmp_path / "audited/features.npz") as data:
-        np.testing.assert_array_equal(data["y_error"], [0])
+    from cverify.features import load_run_features
+    data, manifest = load_run_features(tmp_path / "audited")
+    np.testing.assert_array_equal(data["y_error"], [0])
+    assert not (tmp_path / "audited/features.npz").exists()
 
 
 def test_all_batch_scripts_request_one_cpu():

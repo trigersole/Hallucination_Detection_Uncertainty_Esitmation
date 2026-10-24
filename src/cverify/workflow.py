@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import errno
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -170,7 +172,7 @@ def finalize_worker(config: dict) -> None:
         atomic_json(status_path, {"phase": "needs_review", "review_hash": review_hash,
                                   "message": f"Review {summary['counts']['pending']} answers in {review}; fill judgment and reviewer."})
         return
-    with np.load(audited / "features.npz") as data:
+    with np.load(audited / "labels.npz") as data:
         y = data["y_error"]
         if len(y) < 20 or len(np.unique(y)) != 2 or np.min(np.bincount(y)) < 5:
             atomic_json(status_path, {"phase": "needs_review", "review_hash": review_hash,
@@ -199,6 +201,19 @@ def finalize_once(config: dict) -> bool:
     except LockBusyError:
         print("Finalization is already running in another process; this duplicate worker is exiting without changes.", flush=True)
         return False
+    except OSError as error:
+        if error.errno not in {errno.EDQUOT, errno.ENOSPC}:
+            raise
+        message = "Storage quota/capacity exhausted. Preserve extraction and review; free space, then resume finalization."
+        try:
+            atomic_json(Path(config["run"]) / "finalize_status.json", {
+                "phase": "storage_blocked", "review_hash": file_digest(Path(config["run"]) / "review.jsonl"),
+                "message": message,
+            })
+        except OSError:
+            pass
+        print(f"{message}\nOriginal error: {error}", file=sys.stderr, flush=True)
+        raise SystemExit(75)
 
 
 class Slurm:
@@ -227,6 +242,10 @@ class Slurm:
     def state(self, job: str) -> str:
         value = self.call("sacct", "-n", "-X", "-j", job, "--format=State", "--parsable2")
         return value.splitlines()[0].split("|")[0].split()[0].rstrip("+") if value else ""
+
+    def exit_code(self, job: str):
+        value = self.call("sacct", "-n", "-X", "-j", job, "--format=ExitCode", "--parsable2")
+        return int(value.splitlines()[0].split("|")[0].split(":")[0]) if value else None
 
     def submit(self, config: dict, config_path: Path, kind: str, index: int | None) -> str:
         if config.get("finalize_existing") and kind != "finalize":
@@ -287,7 +306,7 @@ def controller(config_path: Path, config: dict, scheduler=None, poll_seconds=30,
         if all(completed) and not any(info["id"] in active for key, info in state["jobs"].items() if key.startswith("extract:")):
             final = load_json(run / "finalize_status.json")
             active_finalizer = any(info["id"] in active for key, info in state["jobs"].items() if key == "finalize")
-            if final and final.get("review_hash") == file_digest(run / "review.jsonl") and not active_finalizer:
+            if final and final.get("phase") in {"needs_review", "complete"} and final.get("review_hash") == file_digest(run / "review.jsonl") and not active_finalizer:
                 state["phase"] = final["phase"]
                 atomic_json(state_path, state)
                 print(json.dumps(final, indent=2), flush=True)
@@ -312,6 +331,11 @@ def controller(config_path: Path, config: dict, scheduler=None, poll_seconds=30,
                 if previous["id"] in live:
                     continue
                 terminal = terminal_states[previous["id"]]
+                if terminal == "FAILED" and attempts.get(key, 0) > 0 and getattr(scheduler, "exit_code", lambda job: None)(previous["id"]) == 75:
+                    state.update(phase="storage_blocked", message="Job hit a storage limit; free space before resuming")
+                    atomic_json(state_path, state)
+                    print(state["message"], flush=True)
+                    return 75
                 if terminal not in TERMINAL:
                     if time.time() - previous["submitted_at"] > 600:
                         raise RuntimeError(f"Cannot establish terminal state of job {previous['id']}; refusing duplicate submission")
@@ -319,7 +343,7 @@ def controller(config_path: Path, config: dict, scheduler=None, poll_seconds=30,
                 if kind == "finalize" and terminal == "COMPLETED":
                     # Final status may have changed during this loop; reload at the top.
                     final = load_json(run / "finalize_status.json")
-                    if final and final.get("review_hash") == file_digest(run / "review.jsonl"):
+                    if final and final.get("phase") in {"needs_review", "complete"} and final.get("review_hash") == file_digest(run / "review.jsonl"):
                         break
             if slots == 0:
                 continue

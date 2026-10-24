@@ -23,20 +23,43 @@ def lock_is_busy(path: Path) -> bool:
 
 def atomic_json(path: Path, value) -> None:
     temporary = path.with_name(path.name + ".tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
-        json.dump(value, handle, indent=2, ensure_ascii=False)
-        handle.flush()
-        os.fsync(handle.fileno())
-    temporary.replace(path)
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    except BaseException:
+        discard_temporary(temporary)
+        raise
 
 
 def atomic_npz(path: Path, **arrays) -> None:
     temporary = path.with_name(path.name + ".tmp")
-    with temporary.open("wb") as handle:
-        np.savez_compressed(handle, **arrays)
-        handle.flush()
-        os.fsync(handle.fileno())
-    temporary.replace(path)
+    try:
+        with temporary.open("wb") as handle:
+            np.savez_compressed(handle, **arrays)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    except BaseException:
+        discard_temporary(temporary)
+        raise
+
+
+def discard_temporary(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass  # Preserve the original write error if cleanup also fails.
+
+
+def sha256_file(path: Path) -> str:
+    checksum = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            checksum.update(block)
+    return checksum.hexdigest()
 
 
 def digest(value) -> str:
