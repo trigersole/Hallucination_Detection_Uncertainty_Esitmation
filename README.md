@@ -533,3 +533,35 @@ layers, layer 15, and all four layers. Editing labels creates a new result versi
 rather than replacing an earlier reviewed result. No new GPU generation is needed
 for label corrections. This still uses lexical entropy, not full semantic entropy;
 regularization/learning-curve comparisons remain separate research work.
+
+### Recover a completed extraction after the finalization-lock fix
+
+The runner now explicitly requests one node and one task, and calls
+`srun --ntasks=1 --cpus-per-task=1`. Another live finalizer holding the advisory
+lock is treated as existing work, not a reason to crash or submit duplicates.
+Do not delete a live lock file: the operating system releases its lock when the
+holder exits, and unlinking it can allow concurrent writers.
+
+For an existing run with all extraction shards complete, pull the update and use:
+
+```bash
+git pull --ff-only
+bash scripts/run_assessment.sh --background --finalize-existing
+```
+
+This mode reuses the completed shards and permits only merge/review/training.
+It validates the original dataset, shard sizes, completion fingerprints and
+extraction settings, preserves the original `workflow_config.json`, and records
+the new orchestration code hash in a separate `finalize_config_<hash>.json`.
+It cannot submit GPU extraction. This avoids weakening the normal code-version
+check or forcing another extraction merely to install a scheduler fix. Use this
+same command again after filling the review file or after an interruption.
+
+```bash
+bash scripts/run_assessment.sh --status
+tail -f logs/assessment-controller.log
+```
+
+An unchanged review file with pending judgments still returns `needs_review`.
+The lock fix does not assign correctness labels or erase the history of failed
+jobs in Slurm accounting.

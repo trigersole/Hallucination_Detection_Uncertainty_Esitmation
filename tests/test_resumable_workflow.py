@@ -312,3 +312,73 @@ def test_all_batch_scripts_request_one_cpu():
     for script in scripts:
         assert "#SBATCH --cpus-per-task=1" in script.read_text()
         assert "#SBATCH --cpus-per-task=8" not in script.read_text()
+
+
+def test_duplicate_finalizer_exits_cleanly_and_keeps_live_lock(tmp_path, monkeypatch):
+    from cverify import workflow
+    from cverify.storage import file_lock, lock_is_busy
+    called = []
+    monkeypatch.setattr(workflow, "finalize_worker", lambda config: called.append(config))
+    config = {"run": str(tmp_path)}
+    path = tmp_path / "finalization.lock"
+    with file_lock(path):
+        assert lock_is_busy(path)
+        assert workflow.finalize_once(config) is False
+        assert not called
+        assert lock_is_busy(path)
+    assert not lock_is_busy(path)
+    assert workflow.finalize_once(config) is True
+    assert len(called) == 1
+
+
+def test_controller_waits_for_finalization_lock_instead_of_resubmitting(tmp_path, monkeypatch):
+    from cverify.storage import file_lock
+    workflow, config, done = controller_fixture(tmp_path, monkeypatch)
+    done.update([0, 1, 2])
+    scheduler = FakeSlurm()
+    with file_lock(tmp_path / "finalization.lock"):
+        workflow.controller(tmp_path / "config.json", config, scheduler, max_cycles=1)
+    assert not scheduler.submissions
+    assert json.loads((tmp_path / "workflow_state.json").read_text())["phase"] == "finalizing"
+
+
+def test_finalization_upgrade_preserves_original_extraction_configuration(tmp_path, monkeypatch):
+    from cverify import extract, workflow
+    monkeypatch.setattr(extract, "CausalLMAdapter", FakeAdapter)
+    FakeAdapter.fail_question = None
+    script = tmp_path / "scripts/run_assessment.sh"
+    script.parent.mkdir()
+    script.write_text("#!/bin/bash\n")
+    dataset = tmp_path / "input.jsonl"
+    make_dataset(dataset, 3)
+    monkeypatch.setenv("CVERIFY_PIPELINE_DATA", str(dataset))
+    monkeypatch.setenv("CVERIFY_PIPELINE_RUN", "upgrade")
+    original_path, original = workflow.prepare_config(script)
+    original_bytes = original_path.read_bytes()
+    workflow.extract_worker(original, 0)
+    script.write_text("#!/bin/bash\n# orchestration fix\n")
+    with pytest.raises(ValueError, match="changed"):
+        workflow.prepare_config(script)
+    final_path, final = workflow.prepare_finalization(script)
+    assert original_path.read_bytes() == original_bytes
+    assert final["code_sha256"] == original["code_sha256"]
+    assert final["finalization_code_sha256"] != original["code_sha256"]
+    workflow.validate_worker(final, "finalize")
+    with pytest.raises(ValueError, match="cannot launch GPU"):
+        workflow.validate_worker(final, "extract")
+    (Path(original["run"]) / "shard_0/complete.json").unlink()
+    with pytest.raises(ValueError, match="every extraction shard"):
+        workflow.prepare_finalization(script)
+
+
+def test_finalize_submission_enforces_one_task_and_rejects_gpu_for_upgrade(tmp_path):
+    from cverify.workflow import Slurm
+    scheduler = Slurm()
+    calls = []
+    scheduler.call = lambda *args: calls.append(args) or "123"
+    config = {"project": str(tmp_path), "run": str(tmp_path), "script": "run.sh", "finalize_existing": True}
+    assert scheduler.submit(config, tmp_path / "config.json", "finalize", None) == "123"
+    assert "--ntasks=1" in calls[0] and "--nodes=1" in calls[0] and "--cpus-per-task=1" in calls[0]
+    assert "--gres=gpu:1" not in calls[0]
+    with pytest.raises(ValueError, match="cannot submit extraction"):
+        scheduler.submit(config, tmp_path / "config.json", "extract", 0)

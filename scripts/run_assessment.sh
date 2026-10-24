@@ -3,6 +3,8 @@
 #SBATCH --output=logs/cverify-resume-%j.out
 #SBATCH --error=logs/cverify-resume-%j.err
 #SBATCH --cpus-per-task=1
+#SBATCH --ntasks=1
+#SBATCH --nodes=1
 #SBATCH --mem=32G
 #SBATCH --time=05:50:00
 
@@ -25,11 +27,12 @@ mkdir -p logs
 test -x "$CVERIFY_PYTHON" || { echo "Missing Python: $CVERIFY_PYTHON" >&2; exit 1; }
 
 if [[ "${1:-}" == "--background" ]]; then
-    nohup bash "$PROJECT/scripts/run_assessment.sh" >> "$PROJECT/logs/assessment-controller.log" 2>&1 < /dev/null &
+    shift
+    nohup bash "$PROJECT/scripts/run_assessment.sh" "$@" >> "$PROJECT/logs/assessment-controller.log" 2>&1 < /dev/null &
     echo "Controller PID: $!; log: $PROJECT/logs/assessment-controller.log"
 elif [[ "${1:-}" == "--worker" ]]; then
     shift
-    exec srun "$CVERIFY_PYTHON" -m cverify.workflow worker "$@"
+    exec srun --ntasks=1 --cpus-per-task=1 "$CVERIFY_PYTHON" -m cverify.workflow worker "$@"
 else
     exec "$CVERIFY_PYTHON" -u -m cverify.workflow run --script "$PROJECT/scripts/run_assessment.sh" "$@"
 fi

@@ -16,7 +16,7 @@ from .data import export_truthfulqa, load_jsonl
 from .extract import run_extraction
 from .merge import run_merge
 from .review import apply_review, export_review
-from .storage import atomic_json, digest, file_lock
+from .storage import LockBusyError, atomic_json, digest, file_lock, lock_is_busy
 from .train import run_training
 
 
@@ -68,9 +68,50 @@ def prepare_config(script: Path) -> tuple[Path, dict]:
     return path, config
 
 
-def validate_worker(config: dict) -> None:
-    if file_digest(Path(config["data"])) != config["data_sha256"] or code_digest(Path(config["script"])) != config["code_sha256"]:
+def prepare_finalization(script: Path) -> tuple[Path, dict]:
+    """Use immutable extracted data after an orchestration-only code update."""
+    project = script.parent.parent.resolve()
+    name = os.environ.get("CVERIFY_PIPELINE_RUN", "truthfulqa_concise_chat_audit_l15")
+    original_path = project / "runs" / name / "workflow_config.json"
+    original = load_json(original_path)
+    if original is None:
+        raise ValueError("No existing workflow configuration; start a normal extraction run first")
+    if Path(original["run"]).resolve() != original_path.parent.resolve() or Path(original["project"]).resolve() != project:
+        raise ValueError("Existing configuration belongs to a different project/run")
+    if file_digest(Path(original["data"])) != original["data_sha256"]:
+        raise ValueError("Original extraction dataset changed; cannot finalize existing features")
+    count = math.ceil(original["examples"] / original["shard_size"])
+    if not all(shard_complete(original, index) for index in range(count)):
+        raise ValueError("Finalization-only resume requires every extraction shard to be complete")
+    for index in range(count):
+        manifest = load_json(shard_path(original, index) / "manifest.json")
+        expected = {"model": original["model"], "layers": original["layers"], "chat_format": original["chat_format"],
+                    "samples": original["samples"], "temperature": original["temperature"],
+                    "max_new_tokens": original["initial_tokens"], "max_retry_tokens": original["retry_tokens"],
+                    "labeler": original["labeler"], "seed": original["seed"],
+                    "generation_prompt": original["generation_prompt"]}
+        if any(manifest.get(key) != value for key, value in expected.items()):
+            raise ValueError(f"Extracted settings differ from the original configuration in shard {index}")
+        if manifest.get("evaluation", {}).get("profile") != original["evaluation_profile"]:
+            raise ValueError(f"Extracted evaluation profile differs in shard {index}")
+    current_code = code_digest(script)
+    config = {**original, "finalize_existing": True, "finalization_code_sha256": current_code,
+              "original_config_sha256": file_digest(original_path)}
+    path = original_path.parent / f"finalize_config_{current_code[:12]}.json"
+    atomic_json(path, config)
+    return path, config
+
+
+def validate_worker(config: dict, kind: str = "extract") -> None:
+    if config.get("finalize_existing") and kind != "finalize":
+        raise ValueError("Finalization-only configuration cannot launch GPU extraction")
+    expected_code = config.get("finalization_code_sha256", config["code_sha256"]) if kind == "finalize" else config["code_sha256"]
+    if file_digest(Path(config["data"])) != config["data_sha256"] or code_digest(Path(config["script"])) != expected_code:
         raise ValueError("Code/dataset changed after submission; refusing to mix experiments")
+    if config.get("finalize_existing"):
+        original_path = Path(config["run"]) / "workflow_config.json"
+        if file_digest(original_path) != config["original_config_sha256"]:
+            raise ValueError("Original extraction configuration changed after finalization was scheduled")
 
 
 def shard_path(config: dict, index: int) -> Path:
@@ -149,6 +190,17 @@ def finalize_worker(config: dict) -> None:
     atomic_json(status_path, {"phase": "complete", "review_hash": review_hash, "results": str(audited)})
 
 
+def finalize_once(config: dict) -> bool:
+    """A duplicate worker exits successfully without touching another worker's files."""
+    try:
+        with file_lock(Path(config["run"]) / "finalization.lock"):
+            finalize_worker(config)
+        return True
+    except LockBusyError:
+        print("Finalization is already running in another process; this duplicate worker is exiting without changes.", flush=True)
+        return False
+
+
 class Slurm:
     def call(self, *args) -> str:
         return subprocess.check_output(args, text=True).strip()
@@ -177,7 +229,9 @@ class Slurm:
         return value.splitlines()[0].split("|")[0].split()[0].rstrip("+") if value else ""
 
     def submit(self, config: dict, config_path: Path, kind: str, index: int | None) -> str:
-        command = ["sbatch", "--parsable", "--export=ALL", "--cpus-per-task=1", "--chdir", config["project"],
+        if config.get("finalize_existing") and kind != "finalize":
+            raise ValueError("Finalization-only resume cannot submit extraction jobs")
+        command = ["sbatch", "--parsable", "--export=ALL", "--cpus-per-task=1", "--ntasks=1", "--nodes=1", "--chdir", config["project"],
                    "--job-name", self.job_name(config, kind, index)]
         if kind == "extract":
             command.append("--gres=gpu:1")
@@ -205,6 +259,15 @@ def controller(config_path: Path, config: dict, scheduler=None, poll_seconds=30,
     while True:
         live = scheduler.live_jobs()
         completed = [shard_complete(config, i) for i in range(count)]
+        if all(completed) and lock_is_busy(run / "finalization.lock"):
+            state.update(phase="finalizing", message="Waiting for the active finalization process; no duplicate job submitted")
+            atomic_json(state_path, state)
+            cycle += 1
+            if max_cycles is not None and cycle >= max_cycles:
+                return 0
+            time.sleep(poll_seconds)
+            continue
+        state.pop("message", None)
         terminal_states = {}
         for key, info in state["jobs"].items():
             if info["id"] in live:
@@ -223,13 +286,16 @@ def controller(config_path: Path, config: dict, scheduler=None, poll_seconds=30,
         # Never submit the final CPU job until every extraction job has ended.
         if all(completed) and not any(info["id"] in active for key, info in state["jobs"].items() if key.startswith("extract:")):
             final = load_json(run / "finalize_status.json")
-            if final and final.get("review_hash") == file_digest(run / "review.jsonl"):
+            active_finalizer = any(info["id"] in active for key, info in state["jobs"].items() if key == "finalize")
+            if final and final.get("review_hash") == file_digest(run / "review.jsonl") and not active_finalizer:
                 state["phase"] = final["phase"]
                 atomic_json(state_path, state)
                 print(json.dumps(final, indent=2), flush=True)
                 return 0 if final["phase"] == "complete" else 2
             needed = [("finalize", None)]
         else:
+            if config.get("finalize_existing") and not all(completed):
+                raise ValueError("An extraction shard is no longer complete; finalization-only resume will not regenerate it")
             needed = [("extract", i) for i in range(count) if not completed[i]]
         slots = max(0, min(2 - len(active), 2))
         for kind, index in needed:
@@ -287,6 +353,8 @@ def main():
     run = commands.add_parser("run")
     run.add_argument("--script", type=Path, required=True)
     run.add_argument("--status", action="store_true")
+    run.add_argument("--finalize-existing", action="store_true",
+                     help="Resume only merge/review/training from completed extraction after a controller update")
     worker = commands.add_parser("worker")
     worker.add_argument("kind", choices=["extract", "finalize"])
     worker.add_argument("--config", type=Path, required=True)
@@ -301,19 +369,22 @@ def main():
             print(json.dumps({"workflow": load_json(run_path / "workflow_state.json", {"phase": "not_started"}),
                               "finalization": load_json(run_path / "finalize_status.json")}, indent=2))
             return
-        with file_lock(run_path / "controller.lock"):
-            config_path, config = prepare_config(args.script.resolve())
-            raise SystemExit(controller(config_path, config))
+        try:
+            with file_lock(run_path / "controller.lock"):
+                prepare = prepare_finalization if args.finalize_existing else prepare_config
+                config_path, config = prepare(args.script.resolve())
+                raise SystemExit(controller(config_path, config))
+        except LockBusyError:
+            print("A controller is already running for this run; no second controller was started.", flush=True)
     else:
         config = load_json(args.config)
-        validate_worker(config)
+        validate_worker(config, args.kind)
         if args.kind == "extract":
             if args.shard is None or not 0 <= args.shard < math.ceil(config["examples"] / config["shard_size"]):
                 raise ValueError("Invalid shard index")
             extract_worker(config, args.shard)
         else:
-            with file_lock(Path(config["run"]) / "finalization.lock"):
-                finalize_worker(config)
+            finalize_once(config)
 
 
 if __name__ == "__main__":
