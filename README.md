@@ -626,3 +626,41 @@ boundary. High overlap describes dominant variance geometry and does not prove
 equal correctness information or uncertainty. Centering removes mean shifts;
 these results do not describe condition mean differences. The source features
 and original metrics remain unchanged.
+
+### Cross-condition correctness transfer
+
+After finalization, run a balanced comparison of none, verification and control:
+
+```bash
+mkdir -p logs
+sbatch scripts/compare_transfer.sbatch
+```
+
+This standalone one-CPU job reuses saved representations and the exact seed-42
+training/development/test partition. No GPU or generation is requested. For each
+individual layer, the original three layers and all layers, it fits three probes
+and evaluates all nine source-to-target combinations. Each scaler and balanced
+logistic probe is fitted only on the source condition's training rows with the
+existing C=0.1; its Platt calibrator is fitted only on source development rows.
+Neither scaler, probe nor calibrator adapts to the target condition.
+
+The primary transfer matrix uses raw decision AUROC. Reports also contain
+source-calibrated probability metrics (including Brier score and risk at 80%
+coverage) and the calibration slope. Saturated probabilities can lose ordering
+resolution under condition shifts, so raw-score AUROC is reported separately.
+Paired 1,000-draw test-question bootstrap differences compare each off-diagonal
+cell to both its source-native and target-native baselines, using raw scores.
+These intervals condition on the fitted probes and fixed split, are exploratory,
+and have no multiple-comparison correction. They do not measure retraining
+variability. Raw-coordinate signed probe-direction cosines are descriptive;
+correlated or anisotropic features can make weights unstable. Good transfer
+supports a shared accessible linear signal, not a unique subspace. Poor transfer
+can reflect mean shifts or coordinate changes as well as different signals.
+
+The audited directory receives `cross_condition_transfer/`, containing resumable
+per-layer JSON checkpoints with test predictions and `share_transfer_results.json`
+for sharing. Resume by submitting the same command; matching completed groups
+are reused, while changes in metrics, manifest, local labels/features, code or
+bootstrap settings invalidate checkpoints. The merged source archive is verified
+by the existing reviewed-view loader. Do not submit simultaneous writers to the
+same output directory. Existing extraction and training results are not modified.
