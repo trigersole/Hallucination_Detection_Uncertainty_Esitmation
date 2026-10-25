@@ -664,3 +664,66 @@ are reused, while changes in metrics, manifest, local labels/features, code or
 bootstrap settings invalidate checkpoints. The merged source archive is verified
 by the existing reviewed-view loader. Do not submit simultaneous writers to the
 same output directory. Existing extraction and training results are not modified.
+
+### Pooled and combined uncertainty detectors
+
+Run the bounded next-stage comparison after finalization:
+
+```bash
+mkdir -p logs
+sbatch scripts/compare_combined.sbatch
+```
+
+This uses one CPU, 32 GB RAM, no GPU, and the existing extracted features and
+audited labels. It evaluates original layers, layer 15, and all layers over split
+seeds 42 through 46. Seed 42 uses the saved original split exactly; the others
+repeat the original stratified split algorithm. These seeds change the question
+partition, not generation. Every condition of a question stays in one partition.
+All resulting evaluations are exploratory: this dataset has been inspected, and
+overlapping split seeds do not provide independent external validation.
+
+The fixed methods are native none/verification/control probes, generation-only,
+control+none concatenation, verification-minus-none, shared pooled probes applied
+to each condition, the mean of their probabilities, an equal mean of native-probe
+probabilities, and a training-prevalence reference. Three leave-one-condition-out
+probes are robustness diagnostics and excluded from model selection.
+
+Native baselines use the same balanced logistic regression C=0.1 and source-dev
+Platt scaling as prior experiments. Pooled fitting uses a single shared scaler
+and probe across source conditions with weight 1/(number of source conditions)
+per representation. Thus each unique question has total weight one in both
+scaler/probe fitting and development-set calibration; duplicating a condition
+does not increase its effective regularization strength or label count. No model
+is fitted or recalibrated on test data. Fixed equal-weight means are not fitted
+stacking models. Selecting a method and layer group minimises development Brier
+score; test performance is not used to select a winner. Development calibration
+and selection reuse the small development set, so development metrics are
+selection diagnostics rather than independent performance estimates.
+
+Reports include AUROC, average precision, Brier score, log loss, accuracy and
+balanced accuracy at probability 0.5, descriptive ten-bin ECE/reliability counts,
+area under the risk-coverage curve, and risk at 50/60/70/80/90/100% coverage.
+Coverage uses low predicted error first, with deterministic stable ordering for
+ties. Paired 1,000-draw question bootstraps compare pooled-mean, ensemble-mean and
+the development-selected method to the development-selected native probe and
+the generation/strong combination baselines. Deltas are candidate minus baseline:
+positive AUROC is better, while negative Brier and risk differences are better.
+Intervals are conditional on the fitted models, uncorrected for multiple
+comparisons, and not a substitute for retraining or fresh-data validation.
+Native detector mistake overlap is reported on development and test data;
+test overlap does not influence model selection or ensemble weights.
+
+Outputs are under the audited run's `combined_detectors/` directory:
+
+- `summary.txt`: concise selection results and per-method split-seed mean/SD.
+- `share_combined_results.json`: detailed metrics and paired comparisons.
+- `seed_<seed>_<group>.json`: resumable checkpoints including dev/test predictions.
+
+Re-submit the same command to resume. Completed checkpoints are reused only when
+their feature/label, manifest, metric, code and analysis-setting fingerprints
+match. A process lock prevents simultaneous writers. Each seed/group is saved
+atomically; a timeout during a group requires recomputing only that group.
+The Python module supports `--seeds`, `--bootstrap`, `--metrics`, and `--output`
+for explicitly configured follow-up runs. Existing extraction, review and earlier
+results are preserved. New independent evaluation data and a documented check of
+label reliability still need to be supplied before confirmatory thesis claims.
