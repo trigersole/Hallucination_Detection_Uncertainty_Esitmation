@@ -778,3 +778,43 @@ of the source feature archive. Source hashes are verified by the existing
 reviewed-view loader. Re-submit the same command to resume. The module accepts
 `--metrics`, `--output` and `--k`. Existing training results and the prior
 second-pass-only subspace report remain unchanged.
+
+### Finish the existing analysis in one job
+
+```bash
+mkdir -p logs
+sbatch scripts/finish_analysis.sbatch
+```
+
+The one-CPU/no-GPU job resumes the five-seed pooled/combined comparison and the
+first/second-pass PCA analysis using their existing checkpoints, then writes a
+single `final_analysis/summary.txt` beneath the audited run directory. Previous
+comparison modules and their fingerprints are unchanged, so matching completed
+work is reused. If another analysis holds one of the existing process locks, the
+finisher waits in 30-second intervals instead of launching duplicate fitting.
+If the Slurm time limit interrupts it, re-submit the same job to resume completed
+seed/group checkpoints. This job does not run new model generations or labels.
+
+The final diagnostic reads the saved common-first-pass-basis projection CSVs.
+For each component, it measures training correlation of `(second-first)` with
+`-first`, second/first variance ratio, and residual correctness AUROC after
+regressing the transition on the first-pass score. The regression and the
+correctness orientation use training rows only. High positive correlation with
+small second/first variance supports arithmetic inheritance of the first-pass
+signal; it does not prove a causal explanation. A residual with little linear
+correctness information does not rule out other directions or nonlinear signals.
+The short summary selects one first-pass PC per group using training AUROC;
+the detailed JSON retains every component rather than selecting by test score.
+
+Outputs under the audited run's `final_analysis/` are:
+
+- `status.json`: stage, or `complete` after all output files are written.
+- `summary.txt`: development-selected detectors, combination-versus-baseline
+  performance and paired intervals, followed by transition inheritance checks.
+- `transition_diagnostics.json`: every component's results and projection hashes.
+- `share_final_analysis.json`: full combined and transition reports for review.
+
+Check `logs/finish-<jobid>.out` and `.err` while running. A complete local analysis
+report does not mean independent thesis validation is complete: external data
+and a documented label-reliability check remain outstanding. All current
+results reuse inspected examples, and repeated split seeds overlap.
