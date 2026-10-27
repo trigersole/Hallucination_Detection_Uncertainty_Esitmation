@@ -727,3 +727,54 @@ The Python module supports `--seeds`, `--bootstrap`, `--metrics`, and `--output`
 for explicitly configured follow-up runs. Existing extraction, review and earlier
 results are preserved. New independent evaluation data and a documented check of
 label reliability still need to be supplied before confirmatory thesis claims.
+
+### First-pass versus second-pass eigenvector analysis
+
+The earlier `compare_subspaces.sbatch` compared only none/verification/control
+with each other. To include the original answer-generation state, run:
+
+```bash
+mkdir -p logs
+sbatch scripts/compare_passes.sbatch
+```
+
+This one-CPU/no-GPU analysis reuses the completed audited run and the exact saved
+training split. It fits top-10 covariance eigenvectors using only training rows
+for `generation_state`, `none_state`, `verify_state` and `control_state`. It
+reports all pairwise principal angles, overlaps, eigenvector cosine matrices,
+explained variance, cutoff eigengaps, paired-state cosines/distances, training
+mean shifts, and variance captured across each other's subspaces. All conditions
+must have matching hidden coordinates; multiple prompt blocks are rejected
+rather than silently compared with a different-width first-pass state.
+
+For assessment-v3, first-pass features are from the last non-EOS answer token;
+second-pass features are from the assessment cue BEFORE generating an assessment.
+No generated verification explanation or `detailed` condition is present in
+that run. Recorded manifest positions and prompts are included in the report.
+The original extractor L2-normalised each layer vector before storing it, so this
+cannot recover raw activation magnitudes. It uses no additional coordinate
+standardisation. Different token positions and contexts also confound a causal
+interpretation of first-to-second-pass changes.
+
+Outputs under the audited directory's `first_second_pass_geometry/` include:
+
+- `summary.txt`: short first/second-pass comparison for each layer/group.
+- `share_pass_geometry.json`: full geometric and correctness-projection results.
+- `<group>_projections.csv`: paired rows, split, audited correctness, projections
+  on each condition's own PCs and on a common first-pass PC basis.
+
+All projection coordinates subtract that condition's training mean. This removes
+mean offsets from the CSV comparisons, while the report measures mean shifts
+separately. Own-PC numbers across conditions are not common directions; use
+`first_pass_pc_*` columns to compare trajectories in a shared basis. PC signs
+are arbitrary. Direction orientations for correctness AUROC are chosen only on
+training rows and then fixed for test rows; these are exploratory univariate
+diagnostics, not a calibrated detector, with no multiplicity or stability
+correction. Paired centered transition projections are also reported.
+Use resampling before interpreting a particular eigenvector as stable.
+
+Results are small per-group resumable checkpoints and projection CSVs, not copies
+of the source feature archive. Source hashes are verified by the existing
+reviewed-view loader. Re-submit the same command to resume. The module accepts
+`--metrics`, `--output` and `--k`. Existing training results and the prior
+second-pass-only subspace report remain unchanged.
