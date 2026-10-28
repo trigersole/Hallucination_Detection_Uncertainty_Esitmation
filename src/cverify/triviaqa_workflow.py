@@ -81,20 +81,30 @@ def prepare_workflow(script):
             "Independent TriviaQA train/dev/test experiment with the TruthfulQA representation and detector protocol; "
             "five split seeds 42-46, fixed all-layer matched comparison, official exact-match labels. "
             "No TruthfulQA-fitted detector is used for this comparison.")
+    labels = os.environ.get("CVERIFY_TRIVIAQA_LABELS", "exact_match")
+    if labels not in {"reviewed", "exact_match"} or (labels == "reviewed" and analysis != "within_dataset"):
+        raise ValueError("Reviewed TriviaQA labels require within-dataset replication")
+    if labels == "reviewed":
+        config["label_protocol"] = "reviewed_factual_correctness"
+        config["labeler"] = "deferred"
+        config["external_protocol"] = (
+            "Independent TriviaQA train/dev/test experiment with reviewed factual-correctness labels and "
+            "the same review/exclusion and representation/detector protocol as TruthfulQA; "
+            "five split seeds 42-46, fixed all-layer comparison. Official EM is supplementary only.")
     if previous is not None and previous != config:
         raise ValueError("Code/source/subset settings changed since TriviaQA started; restore them or choose a new TriviaQA run name")
     atomic_json(path, config)
     return path, config
 
 
-def validate_target_protocol(source, target):
+def validate_target_protocol(source, target, expected_labeler="triviaqa-exact"):
     keys = ("model", "layers", "generation_prompt", "evaluation", "chat_format", "chat_template", "samples", "temperature",
             "max_new_tokens", "max_retry_tokens", "generation_state_position", "resolved_layers", "runtime")
     for key in keys:
         if source.get(key) != target.get(key):
             raise ValueError(f"TriviaQA/source representation protocol mismatch: {key}")
-    if target.get("labeler") != "triviaqa-exact":
-        raise ValueError("TriviaQA target must use official exact-match labels")
+    if target.get("labeler") != expected_labeler:
+        raise ValueError(f"TriviaQA target labeler must be {expected_labeler}")
 
 
 def safe_metrics(y, p):
@@ -152,25 +162,30 @@ def finalize_external(config, full):
         raise ValueError("Frozen TruthfulQA source artifacts changed")
     source_data, source_manifest = load_run_features(source)
     target_data, target_manifest = load_run_features(full)
-    validate_target_protocol(source_manifest, target_manifest)
+    reviewed = config.get("label_protocol") == "reviewed_factual_correctness"
+    validate_target_protocol(source_manifest, target_manifest, "deferred" if reviewed else "triviaqa-exact")
     saved = json.loads((source / "results_seed_42_original_layers" / "metrics.json").read_text())
     original = json.loads((source / "results_seed_42_all_layers" / "metrics.json").read_text())
     if original["configuration"]["selected_layers"] != source_manifest["layers"] or original["split"] != saved["split"]:
         raise ValueError("Source all-layer metrics do not match the declared split/layers")
     y = target_data["y_error"]
-    if len(y) != config["examples"] or not np.isin(y, [0, 1]).all():
-        raise ValueError("Incomplete or invalid official TriviaQA labels")
+    if len(y) != config["examples"] or not np.isin(y, [-1] if reviewed else [0, 1]).all():
+        raise ValueError("Incomplete or invalid TriviaQA extraction labels")
     rows = read_records(full / "metadata.jsonl")
     questions = load_jsonl(config["data"])
     scorer = TriviaQAExactMatchLabeler()
     if (len(rows) != len(y) or len(questions) != len(y)
-            or [int(not row["is_correct"]) for row in rows] != y.tolist()):
+            or (not reviewed and [int(not row["is_correct"]) for row in rows] != y.tolist())):
         raise ValueError("Target metadata labels and features differ")
     for row, question, label in zip(rows, questions, y):
         if (row["id"] != question.id or row["question"] != question.question or tuple(row["aliases"]) != question.answers
-                or int(not scorer.score(row["answer"], question.answers)) != label):
+                or (not reviewed and int(not scorer.score(row["answer"], question.answers)) != label)):
             raise ValueError("Target references, sample order or official scores differ from exported subset")
     if config.get("analysis_mode") == "within_dataset":
+        if reviewed:
+            from .triviaqa_replication import finalize_reviewed_replication
+            finalize_reviewed_replication(config, full, saved["configuration"], rows)
+            return
         from .triviaqa_replication import finalize_replication
         finalize_replication(config, full, saved["configuration"], rows)
         return

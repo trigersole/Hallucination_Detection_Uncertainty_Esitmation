@@ -191,7 +191,33 @@ def test_safe_metrics_explains_single_class_without_fabricating_auc():
     assert result["brier"] == pytest.approx(.09)
 
 
-@pytest.mark.parametrize("mode", ["frozen", "within_dataset"])
+def test_deferred_triviaqa_finalization_stops_for_factual_review(tmp_path):
+    source, data, manifest, saved, splits = source_fixture(tmp_path)
+    run, full = tmp_path / "reviewed", tmp_path / "reviewed" / "full"
+    full.mkdir(parents=True)
+    target = {key: values[:20].copy() for key, values in data.items()}
+    target["y_error"] = np.full(20, -1)
+    np.savez(full / "features.npz", **target)
+    (full / "manifest.json").write_text(json.dumps({**manifest, "labeler": "deferred"}))
+    rows = [{"id": str(i), "question": f"Question {i}", "answer": "The capital is Paris.",
+             "aliases": ["paris"], "is_correct": None, "generation_details": [{"stop_reason": "eos"}]}
+            for i in range(20)]
+    (full / "metadata.jsonl").write_text("\n".join(json.dumps(row) for row in rows))
+    dataset = run / "triviaqa.jsonl"
+    dataset.write_text("\n".join(json.dumps({"id": row["id"], "question": row["question"], "answers": row["aliases"]})
+                                 for row in rows))
+    config = {"run": str(run), "source_run": str(source), "source_snapshot": source_snapshot(source),
+              "examples": 20, "data": str(dataset), "analysis_mode": "within_dataset",
+              "label_protocol": "reviewed_factual_correctness"}
+    finalize_external(config, full)
+    status = json.loads((run / "finalize_status.json").read_text())
+    assert status["phase"] == "needs_review" and status["review_hash"]
+    reviews = [json.loads(line) for line in (run / "review.jsonl").read_text().splitlines()]
+    assert len(reviews) == 20 and all(row["judgment"] is None for row in reviews)
+    assert not (run / "dataset_replication" / "summary.txt").exists()
+
+
+@pytest.mark.parametrize("mode", ["frozen", "within_dataset", "within_reviewed"])
 def test_workflow_prepares_separate_run_and_uses_automatic_pinned_extraction(tmp_path, monkeypatch, mode):
     source, data, manifest, saved, splits = source_fixture(tmp_path)
     project = tmp_path / "project"
@@ -208,7 +234,10 @@ def test_workflow_prepares_separate_run_and_uses_automatic_pinned_extraction(tmp
     monkeypatch.setenv("CVERIFY_BENCHMARK", "triviaqa")
     monkeypatch.setenv("CVERIFY_PIPELINE_RUN", "triviaqa_test")
     monkeypatch.setenv("CVERIFY_TRIVIAQA_SIZE", "6")
-    monkeypatch.setenv("CVERIFY_TRIVIAQA_ANALYSIS", mode)
+    analysis = "within_dataset" if mode == "within_reviewed" else mode
+    labeler = "deferred" if mode == "within_reviewed" else "triviaqa-exact"
+    monkeypatch.setenv("CVERIFY_TRIVIAQA_ANALYSIS", analysis)
+    monkeypatch.setenv("CVERIFY_TRIVIAQA_LABELS", "reviewed" if mode == "within_reviewed" else "exact_match")
     def export(path, size, seed, excluded):
         assert size == 6 and seed == 42 and len(excluded) == 80
         path.write_text("\n".join(json.dumps({"id": f"t{i}", "question": f"Target question {i}", "answers": ["paris"]}) for i in range(size)))
@@ -216,16 +245,18 @@ def test_workflow_prepares_separate_run_and_uses_automatic_pinned_extraction(tmp
     monkeypatch.setattr("cverify.triviaqa_workflow.export_subset", export)
     from cverify import workflow
     path, config = workflow.prepare_config(script)
-    assert config["model_revision"] == "pinned-source" and config["labeler"] == "triviaqa-exact"
+    assert config["model_revision"] == "pinned-source" and config["labeler"] == labeler
     assert config["source_run"] == str(source)
     assert path.parent == project / "runs" / "triviaqa_test"
     assert config["cpus_per_task"] == 1 and config["max_submitted_jobs"] == 2
-    assert config.get("analysis_mode", "frozen") == mode
+    assert config.get("analysis_mode", "frozen") == analysis
+    if mode == "within_reviewed":
+        assert config["label_protocol"] == "reviewed_factual_correctness"
     captured = []
     monkeypatch.setattr(workflow, "run_extraction", lambda args: captured.append(args))
     workflow.extract_worker(config, 0)
     assert captured[0].model_revision == "pinned-source"
-    assert captured[0].labeler == "triviaqa-exact"
+    assert captured[0].labeler == labeler
     assert captured[0].layers == [-1, -4, -8, 15]
     assert captured[0].expected_runtime == manifest["runtime"]
 
