@@ -72,6 +72,15 @@ def prepare_workflow(script):
               "evaluation_profile": "assessment-v3", "generation_prompt": "concise",
               "cpus_per_task": 1, "max_submitted_jobs": 2,
               "external_protocol": "All-layer probes fitted on TruthfulQA seed42 train, calibrated on TruthfulQA dev; no TriviaQA fitting, selection or recalibration; official TriviaQA EM labels."}
+    analysis = os.environ.get("CVERIFY_TRIVIAQA_ANALYSIS", "frozen")
+    if analysis not in {"frozen", "within_dataset"}:
+        raise ValueError("Unknown TriviaQA analysis mode")
+    if analysis == "within_dataset":
+        config["analysis_mode"] = analysis
+        config["external_protocol"] = (
+            "Independent TriviaQA train/dev/test experiment with the TruthfulQA representation and detector protocol; "
+            "five split seeds 42-46, fixed all-layer matched comparison, official exact-match labels. "
+            "No TruthfulQA-fitted detector is used for this comparison.")
     if previous is not None and previous != config:
         raise ValueError("Code/source/subset settings changed since TriviaQA started; restore them or choose a new TriviaQA run name")
     atomic_json(path, config)
@@ -161,6 +170,10 @@ def finalize_external(config, full):
         if (row["id"] != question.id or row["question"] != question.question or tuple(row["aliases"]) != question.answers
                 or int(not scorer.score(row["answer"], question.answers)) != label):
             raise ValueError("Target references, sample order or official scores differ from exported subset")
+    if config.get("analysis_mode") == "within_dataset":
+        from .triviaqa_replication import finalize_replication
+        finalize_replication(config, full, saved["configuration"], rows)
+        return
     splits = make_splits(source_data["y_error"], 42, saved["configuration"], saved["split"])
     output = run / "external_validation"
     output.mkdir(parents=True, exist_ok=True)

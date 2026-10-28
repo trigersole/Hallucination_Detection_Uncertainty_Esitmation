@@ -136,7 +136,8 @@ def test_external_detectors_fit_only_source_and_reuse_caches(tmp_path, monkeypat
         validate_target_protocol(manifest, {**manifest, "runtime": {"model_commit": "changed"}, "labeler": "triviaqa-exact"})
 
 
-def test_external_finalization_uses_all_official_scores_without_manual_gate(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mode", ["frozen", "within_dataset"])
+def test_external_finalization_uses_all_official_scores_without_manual_gate(tmp_path, monkeypatch, mode):
     source, data, manifest, saved, splits = source_fixture(tmp_path)
     run, full = tmp_path / "external", tmp_path / "external" / "full"
     full.mkdir(parents=True)
@@ -156,13 +157,26 @@ def test_external_finalization_uses_all_official_scores_without_manual_gate(tmp_
               "data": str(dataset), "dataset_export": {"label_protocol": "official_whole_answer_normalized_exact_match"},
               "code_sha256": "fixture", "external_protocol": "frozen fixture"}
     import cverify.triviaqa_workflow as external
+    if mode == "within_dataset":
+        config["analysis_mode"] = mode
+        calls = []
+        def replicate(received, received_full, settings, received_rows):
+            assert received_full == full and settings == saved["configuration"]
+            assert len(received_rows) == 20
+            calls.append(1)
+            from cverify.storage import atomic_json
+            atomic_json(run / "finalize_status.json", {"phase": "complete"})
+        monkeypatch.setattr("cverify.triviaqa_replication.finalize_replication", replicate)
     actual = external.paired_comparison
     monkeypatch.setattr(external, "paired_comparison", lambda y, a, b, reps, seed: actual(y, a, b, 2, seed))
     finalize_external(config, full)
     assert json.loads((run / "finalize_status.json").read_text())["phase"] == "complete"
-    report = json.loads((run / "external_validation" / "report.json").read_text())
-    assert report["counts"]["evaluated"] == 20 and report["counts"]["quality_excluded"] == 0
-    assert len(report["methods"]) == 6
+    if mode == "frozen":
+        report = json.loads((run / "external_validation" / "report.json").read_text())
+        assert report["counts"]["evaluated"] == 20 and report["counts"]["quality_excluded"] == 0
+        assert len(report["methods"]) == 6
+    else:
+        assert calls == [1] and not (run / "external_validation").exists()
     assert not (run / "review.jsonl").exists()
     metadata[0]["answer"] = "Definitely not Paris"
     (full / "metadata.jsonl").write_text("\n".join(json.dumps(row) for row in metadata))
@@ -177,7 +191,8 @@ def test_safe_metrics_explains_single_class_without_fabricating_auc():
     assert result["brier"] == pytest.approx(.09)
 
 
-def test_workflow_prepares_separate_run_and_uses_automatic_pinned_extraction(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mode", ["frozen", "within_dataset"])
+def test_workflow_prepares_separate_run_and_uses_automatic_pinned_extraction(tmp_path, monkeypatch, mode):
     source, data, manifest, saved, splits = source_fixture(tmp_path)
     project = tmp_path / "project"
     script = project / "scripts" / "run_triviaqa.sh"
@@ -193,6 +208,7 @@ def test_workflow_prepares_separate_run_and_uses_automatic_pinned_extraction(tmp
     monkeypatch.setenv("CVERIFY_BENCHMARK", "triviaqa")
     monkeypatch.setenv("CVERIFY_PIPELINE_RUN", "triviaqa_test")
     monkeypatch.setenv("CVERIFY_TRIVIAQA_SIZE", "6")
+    monkeypatch.setenv("CVERIFY_TRIVIAQA_ANALYSIS", mode)
     def export(path, size, seed, excluded):
         assert size == 6 and seed == 42 and len(excluded) == 80
         path.write_text("\n".join(json.dumps({"id": f"t{i}", "question": f"Target question {i}", "answers": ["paris"]}) for i in range(size)))
@@ -204,6 +220,7 @@ def test_workflow_prepares_separate_run_and_uses_automatic_pinned_extraction(tmp
     assert config["source_run"] == str(source)
     assert path.parent == project / "runs" / "triviaqa_test"
     assert config["cpus_per_task"] == 1 and config["max_submitted_jobs"] == 2
+    assert config.get("analysis_mode", "frozen") == mode
     captured = []
     monkeypatch.setattr(workflow, "run_extraction", lambda args: captured.append(args))
     workflow.extract_worker(config, 0)

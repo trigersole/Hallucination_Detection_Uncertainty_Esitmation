@@ -1,5 +1,9 @@
 # Frozen TriviaQA evaluation protocol
 
+For the independent within-TriviaQA replication requested subsequently, use
+`scripts/run_triviaqa_replication.sh` and see `triviaqa_replication_protocol.md`.
+The frozen transfer mode described below answers a different research question.
+
 This is a fixed external evaluation following the TruthfulQA exploratory study.
 The target dataset uses automatic official exact-match labels at the user's
 explicit request. It is not a second manual factual-correctness audit.
