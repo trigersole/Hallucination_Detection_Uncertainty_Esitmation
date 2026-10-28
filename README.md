@@ -818,3 +818,54 @@ Check `logs/finish-<jobid>.out` and `.err` while running. A complete local analy
 report does not mean independent thesis validation is complete: external data
 and a documented label-reliability check remain outstanding. All current
 results reuse inspected examples, and repeated split seeds overlap.
+
+### Final matched first-pass / second-pass baseline check
+
+After the completed combined-detector analysis, run:
+
+```bash
+mkdir -p logs
+sbatch scripts/compare_matched_passes.sbatch
+```
+
+This one-CPU/no-GPU job fits only five additional first-pass answer-state probes,
+using all saved layers and the exact question splits for seeds 42-46. It reuses
+the saved second-pass probabilities for native none, control+none concatenation
+and the equal-weight native ensemble. No new answers, assessments or labels are
+generated, and no method, layer or classification threshold is selected here.
+
+The original combined report and each all-layer prediction checkpoint must be
+present. Feature/label hashes, original metric file, code versions, C, per-seed
+fingerprints, question order, labels, probability ranges and cached AUROC/Brier
+are checked before reuse. Training-only scaling, balanced logistic regression
+and source-development Platt scaling match the existing protocol. If the original
+seed-42 all-layer first-pass result is available with matching audit/layers/split,
+its AUROC and Brier must be reproduced within numerical tolerance.
+
+Outputs under `matched_pass_detection/` in the audited directory include:
+
+- `summary.txt`: four fixed detectors for each split; ordinary/balanced accuracy
+  at 0.5, AUROC, Brier and risk80; paired second-minus-first AUROC/Brier intervals;
+  mean/SD differences, directional win counts and a bounded impact statement.
+- `share_matched_passes.json`: detailed metrics, confusion matrices and paired
+  comparisons, including risk80 intervals.
+- `seed_<seed>.json`: resumable predictions and per-seed results.
+- `status.json`: `running` or `complete`.
+- `thesis_impact.md`: methods, mean/SD results table and bounded impact statements
+  populated from this run's actual results for integration into the thesis.
+
+Differences are second minus first: positive AUROC and negative Brier/risk80
+favour the second-pass detector. AUROC is not accuracy; fixed-0.5 accuracy is
+reported separately with balanced accuracy and a confusion matrix ordered
+correct/incorrect. Bootstrap intervals condition on fitted models, are not
+adjusted for multiple comparisons and do not provide independent validation.
+The same overlapping split seeds must not be counted as independent replications.
+
+Single-condition none uses one extra assessment forward pass beyond original
+answer generation; concatenation uses two, and the native ensemble uses three.
+Therefore this is not an equal-compute test, and "two-pass" denotes two stages
+when used for a multi-condition detector. Passes also differ in token position
+and context. This final check closes the missing matched first-pass baseline;
+it does not resolve question-only effects or establish a causal verification gain.
+Re-submit the same command to resume matching completed per-seed checkpoints.
+Existing combined results and previous summaries remain unchanged.
