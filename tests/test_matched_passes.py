@@ -124,3 +124,26 @@ def test_original_seed_first_pass_baseline_is_reproduced(tmp_path):
     path.write_text(json.dumps(original))
     with pytest.raises(ValueError, match="reproduce"):
         matched.analyze(tmp_path, tmp_path / "out", [42], 2)
+
+
+def test_float32_cached_brier_survives_json_roundtrip(tmp_path):
+    y, _, saved, summary = make_completed_fixture(tmp_path)
+    path = tmp_path / "combined_detectors" / "seed_42_all_layers.json"
+    record = json.loads(path.read_text())
+    splits = make_splits(y, 42, saved["configuration"], saved["split"])
+    for split in ("dev", "test"):
+        for name in matched.SECOND:
+            p = np.asarray(record["predictions"][split]["p_error"][name], dtype=np.float32)
+            record["predictions"][split]["p_error"][name] = p.tolist()
+            record["methods"][name][split] = matched.metrics(y[splits[split]], p)
+    # Simulate the completed producer writing float32 metrics and predictions.
+    record = json.loads(json.dumps(record))
+    entry = {key: value for key, value in record.items() if key != "predictions"}
+    cached = matched.validate_second(record, entry, record["fingerprint"], 42, [15], y, splits)
+    np.testing.assert_array_equal(cached["test"]["native_none"],
+                                  record["predictions"]["test"]["p_error"]["native_none"])
+    # Even tiny changes beyond rounding must still be rejected with context.
+    entry = json.loads(json.dumps(entry))
+    entry["methods"]["native_none"]["test"]["brier"] += 1e-5
+    with pytest.raises(ValueError, match="seed=42, summary, method=native_none, split=test, metric=brier"):
+        matched.validate_second(record, entry, record["fingerprint"], 42, [15], y, splits)

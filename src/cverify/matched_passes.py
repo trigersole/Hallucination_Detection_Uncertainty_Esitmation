@@ -38,10 +38,26 @@ def validate_second(checkpoint, summary_entry, expected_fingerprint, seed, layer
             if p.shape != (len(splits[split]),) or not np.isfinite(p).all() or np.any((p < 0) | (p > 1)):
                 raise ValueError("Invalid cached second-pass probabilities")
             computed = metrics(y[splits[split]], p)
-            for record in (checkpoint, summary_entry):
+            # JSON preserves values but not the original NumPy dtype. Some
+            # sklearn versions keep float32 probabilities throughout fitting
+            # and Brier reduction; reloading them as float64 changes rounding.
+            # Only admit that alternative when every saved value is exactly
+            # representable as float32. Do not relax ranking/provenance checks.
+            p32 = p.astype(np.float32)
+            brier32 = (metrics(y[splits[split]], p32)["brier"]
+                       if np.array_equal(p, p32.astype(float)) else None)
+            for record_name, record in (("checkpoint", checkpoint), ("summary", summary_entry)):
                 for key in ("auroc", "brier"):
-                    if not np.isclose(record["methods"][name][split][key], computed[key], rtol=0, atol=1e-10):
-                        raise ValueError("Cached second-pass metrics do not match predictions")
+                    stored = record["methods"][name][split][key]
+                    matches = np.isclose(stored, computed[key], rtol=0, atol=1e-10)
+                    if key == "brier" and brier32 is not None:
+                        matches = matches or np.isclose(stored, brier32, rtol=0, atol=1e-10)
+                    if not matches:
+                        raise ValueError(
+                            f"Cached second-pass metrics do not match predictions: "
+                            f"seed={seed}, {record_name}, method={name}, split={split}, "
+                            f"metric={key}, stored={stored!r}, recomputed={computed[key]!r}, "
+                            f"float32_brier={brier32!r}")
             predictions[split][name] = p
     return predictions
 
