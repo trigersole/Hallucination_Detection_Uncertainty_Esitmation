@@ -38,8 +38,11 @@ def _run_extraction(args) -> None:
         raise ValueError("Token limits must be positive and retry ceiling cannot be below the initial limit")
     configuration = {key: value for key, value in vars(args).items() if key not in ("resume", "output")}
     configuration["data_sha256"] = hashlib.sha256(Path(args.data).read_bytes()).hexdigest()
+    implementation_files = ["extract.py", "model.py", "prompts.py", "labeling.py"]
+    if args.labeler == "triviaqa-exact":
+        implementation_files.append("triviaqa_data.py")
     configuration["implementation_sha256"] = hashlib.sha256(b"".join(
-        Path(__file__).with_name(name).read_bytes() for name in ("extract.py", "model.py", "prompts.py", "labeling.py")
+        Path(__file__).with_name(name).read_bytes() for name in implementation_files
     )).hexdigest()
     fingerprint = digest(configuration)
     progress_path = output / "progress.json"
@@ -82,7 +85,8 @@ def _run_extraction(args) -> None:
             if row is None or row["question"] != example.question or tuple(row["aliases"]) != example.answers:
                 raise ValueError(f"Reference question or aliases differ for {example.id}")
     adapter = CausalLMAdapter(args.model, device=args.device, dtype=args.dtype,
-                              trust_remote_code=args.trust_remote_code, chat_format=args.chat_format)
+                              trust_remote_code=args.trust_remote_code, chat_format=args.chat_format,
+                              revision=getattr(args, "model_revision", None))
     runtime = {
         "model_commit": getattr(adapter.model.config, "_commit_hash", None),
         "chat_template": getattr(getattr(adapter, "tokenizer", None), "chat_template", None),
@@ -94,6 +98,8 @@ def _run_extraction(args) -> None:
             runtime[package] = version(package)
         except PackageNotFoundError:
             runtime[package] = None
+    if getattr(args, "expected_runtime", None) is not None and args.expected_runtime != runtime:
+        raise ValueError("Frozen source model/tokenizer/library runtime differs; stop before generating target answers")
     runtime_path = output / "runtime.json"
     if runtime_path.exists() and json.loads(runtime_path.read_text(encoding="utf-8")) != runtime:
         raise ValueError("Model revision, chat template or library versions changed; refuse mixed checkpoints")

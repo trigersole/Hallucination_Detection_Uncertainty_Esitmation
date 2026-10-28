@@ -36,6 +36,9 @@ def load_json(path: Path, default=None):
 
 
 def prepare_config(script: Path) -> tuple[Path, dict]:
+    if os.environ.get("CVERIFY_BENCHMARK") == "triviaqa":
+        from .triviaqa_workflow import prepare_workflow
+        return prepare_workflow(script)
     project = script.parent.parent.resolve()
     name = os.environ.get("CVERIFY_PIPELINE_RUN", "truthfulqa_concise_chat_audit_l15")
     if not name or Path(name).name != name or name in {".", ".."}:
@@ -143,8 +146,12 @@ def extract_worker(config: dict, index: int) -> None:
         "--generation-prompt", "concise", "--evaluation-profile", "assessment-v3", "--chat-format", "tokenizer",
         "--max-new-tokens", str(config["initial_tokens"]), "--max-retry-tokens", str(config["retry_tokens"]),
         "--samples", "5", "--temperature", "0.7", "--layers", "-1", "-4", "-8", "15",
-        "--seed", "42", "--seed-scheme", "global", "--dtype", "float16", "--labeler", "deferred", "--resume",
+        "--seed", "42", "--seed-scheme", "global", "--dtype", "float16", "--labeler", config["labeler"], "--resume",
     ])
+    if config.get("model_revision"):
+        args.model_revision = config["model_revision"]
+    if config.get("expected_runtime") is not None:
+        args.expected_runtime = config["expected_runtime"]
     run_extraction(args)
 
 
@@ -159,6 +166,10 @@ def finalize_worker(config: dict) -> None:
     if load_json(run / "merge_complete.json") != {"signature": signature}:
         run_merge(SimpleNamespace(runs=[str(shard_path(config, i)) for i in range(count)], output=str(full)))
         atomic_json(run / "merge_complete.json", {"signature": signature})
+    if config.get("benchmark") == "triviaqa":
+        from .triviaqa_workflow import finalize_external
+        finalize_external(config, full)
+        return
     review = run / "review.jsonl"
     export_review(full, review)
     review_hash = file_digest(review)

@@ -36,7 +36,7 @@ class GeneratedAnswer:
 
 
 class CausalLMAdapter:
-    def __init__(self, model_name: str, *, device: str = "auto", dtype: str = "auto", trust_remote_code: bool = False, chat_format: str = "raw"):
+    def __init__(self, model_name: str, *, device: str = "auto", dtype: str = "auto", trust_remote_code: bool = False, chat_format: str = "raw", revision: str | None = None):
         try:
             import torch
             from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -44,10 +44,11 @@ class CausalLMAdapter:
             raise RuntimeError("Install project dependencies with: pip install -e .") from exc
 
         self.torch = torch
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+        revision_args = {"revision": revision} if revision else {}
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code, **revision_args)
         self.chat_format = chat_format
         self.chat_template_source = ensure_chat_template(self.tokenizer, model_name) if chat_format == "tokenizer" else "raw"
-        kwargs = {"trust_remote_code": trust_remote_code, "torch_dtype": dtype}
+        kwargs = {"trust_remote_code": trust_remote_code, "torch_dtype": dtype, **revision_args}
         if device == "auto":
             kwargs["device_map"] = "auto"
         self.model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs)

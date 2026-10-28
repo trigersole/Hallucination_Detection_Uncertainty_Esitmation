@@ -20,6 +20,16 @@ class ExactMatchLabeler:
         return float(exact_match(answer, aliases))
 
 
+class TriviaQAExactMatchLabeler:
+    """Official whole-answer normalized exact match; never substring acceptance."""
+    name = "triviaqa-exact"
+
+    def score(self, answer: str, aliases: tuple[str, ...]) -> float:
+        from .triviaqa_data import normalize_triviaqa
+        prediction = normalize_triviaqa(answer)
+        return float(any(prediction == normalize_triviaqa(alias) for alias in aliases))
+
+
 class BleurtLabeler:
     """Maximum BLEURT score against acceptable reference answers."""
 
@@ -53,6 +63,8 @@ def build_labeler(kind: str, *, bleurt_model: str | None, device: str):
         return DeferredLabeler()
     if kind == "exact":
         return ExactMatchLabeler()
+    if kind == "triviaqa-exact":
+        return TriviaQAExactMatchLabeler()
     if not bleurt_model:
         raise ValueError("--bleurt-model is required when --labeler bleurt is selected")
     return BleurtLabeler(bleurt_model, device=device)

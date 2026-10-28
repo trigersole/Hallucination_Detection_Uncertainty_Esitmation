@@ -869,3 +869,26 @@ and context. This final check closes the missing matched first-pass baseline;
 it does not resolve question-only effects or establish a causal verification gain.
 Re-submit the same command to resume matching completed per-seed checkpoints.
 Existing combined results and previous summaries remain unchanged.
+
+### Fixed TriviaQA external evaluation
+
+The automatic exact-match protocol and frozen-source design are documented in
+[the TriviaQA protocol](docs/triviaqa_frozen_protocol.md). Start a separate run:
+
+```bash
+bash scripts/run_triviaqa.sh --background
+```
+
+Defaults: 500 unique validation questions, no reference evidence supplied to the
+LLM, original source model revision/prompts/layers, source-only detector training
+and calibration, official whole-answer TriviaQA exact-match labels, at most two
+submitted jobs, one CPU per task, one GPU per extraction job. No review gate or
+target-data recalibration is used. This evaluates benchmark answer matching;
+source/target label definitions differ and must be reported explicitly.
+
+```bash
+bash scripts/run_triviaqa.sh --status
+cat runs/triviaqa_validation500_frozen_em/external_validation/summary.txt
+```
+
+The existing TruthfulQA results and matched comparison remain separate.
